@@ -1,0 +1,6 @@
+{
+  "name": "Las Greenlanters Nails",
+  "description": "Salón boutique de alta manicura, simulador virtual de uñas, atelier de nail art, reservas 24/7 y gestión de cabina.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

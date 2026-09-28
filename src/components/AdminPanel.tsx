@@ -1,0 +1,1207 @@
+import React, { useState, useEffect } from 'react';
+import { Calendar, Users, Palette, CheckCircle2, Clock, XCircle, Phone, Sparkles, Filter, Plus, Eye, BookmarkPlus, Lock, LogOut, Settings, Image, FileText, Trash2, Edit2, Save, X } from 'lucide-react';
+import { Appointment, CustomDesign, NailCatalogStyle } from '../types';
+import { apiService } from '../data/api';
+
+// This is only a client-side local gate, not real authentication. Use server-side auth before public deployment of Staff.
+const STAFF_PIN = import.meta.env.VITE_STAFF_PIN || '';
+
+interface SalonConfig {
+  name: string;
+  description: string;
+  phone: string;
+  email: string;
+  address: string;
+  hours: string;
+  whatsapp: string;
+  logo: string;
+  coverPhoto: string;
+  calendarPublic: boolean;
+  workingHours: Array<{ day: string; open: string; close: string; enabled: boolean }>;
+  blockedSlots: string[];
+  vacations: string[];
+  nailShapes: string[];
+  nailLengths: string[];
+  nailStyles: string[];
+  products: string[];
+  colors: {
+    primary: string;
+    accent: string;
+    background: string;
+  };
+}
+
+interface AdminPanelProps {
+  appointments: Appointment[];
+  setAppointments: React.Dispatch<React.SetStateAction<Appointment[]>>;
+  customDesigns: CustomDesign[];
+  setCustomDesigns: React.Dispatch<React.SetStateAction<CustomDesign[]>>;
+  catalogStyles?: NailCatalogStyle[];
+  setCatalogStyles?: React.Dispatch<React.SetStateAction<NailCatalogStyle[]>>;
+  onAddToCatalog?: (design: CustomDesign) => void;
+}
+
+const DEFAULT_WORKING_HOURS = [
+  { day: 'Lunes', open: '10:00', close: '20:00', enabled: true },
+  { day: 'Martes', open: '10:00', close: '20:00', enabled: true },
+  { day: 'Miércoles', open: '10:00', close: '20:00', enabled: true },
+  { day: 'Jueves', open: '10:00', close: '20:00', enabled: true },
+  { day: 'Viernes', open: '10:00', close: '20:00', enabled: true },
+  { day: 'Sábado', open: '10:00', close: '14:00', enabled: true },
+  { day: 'Domingo', open: '10:00', close: '14:00', enabled: false }
+];
+
+const DEFAULT_CONFIG: SalonConfig = {
+  name: 'Las Greenlanters Nails',
+  description: 'Manicurista · Técnica en uñas gel y poligel · Dibujos a mano, decoración · Almería · Tus manos hablan por ti, haz que destaquen',
+  phone: '',
+  email: '',
+  address: 'Almería',
+  hours: '',
+  whatsapp: '',
+  logo: '/assets/logo.jpg',
+  coverPhoto: '',
+  calendarPublic: true,
+  workingHours: [],
+  blockedSlots: [],
+  vacations: [],
+  nailShapes: [],
+  nailLengths: [],
+  nailStyles: [],
+  products: [],
+  colors: {
+    primary: '#082D05',
+    accent: '#8CFF00',
+    background: '#F7F8EF'
+  }
+};
+
+export const AdminPanel: React.FC<AdminPanelProps> = ({
+  appointments,
+  setAppointments,
+  customDesigns,
+  setCustomDesigns,
+  catalogStyles,
+  setCatalogStyles,
+  onAddToCatalog
+}) => {
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('greenlanters_staff_auth') === 'true');
+  const [pinInput, setPinInput] = useState<string>('');
+  const [pinError, setPinError] = useState<boolean>(false);
+  const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests'>('config');
+  const [selectedTech, setSelectedTech] = useState<string>('all');
+  const [selectedDesignModal, setSelectedDesignModal] = useState<CustomDesign | null>(null);
+
+  // Cabina Staff: la API/SQLite es la fuente de verdad. localStorage queda fuera de la persistencia operativa.
+  const [salonConfig, setSalonConfig] = useState<SalonConfig>(DEFAULT_CONFIG);
+  const [galleryPhotos, setGalleryPhotos] = useState<string[]>([]);
+  const [galleryIds, setGalleryIds] = useState<string[]>([]);
+  const [services, setServices] = useState<any[]>([]);
+  const [specialists, setSpecialists] = useState<any[]>([]);
+  const [bookingRequests, setBookingRequests] = useState<any[]>([]);
+  const [isLoadingData, setIsLoadingData] = useState(true);
+
+  const reloadBookingRequests = async () => {
+    const data = await apiService.getBookingRequests();
+    setBookingRequests(Array.isArray(data) ? data : []);
+  };
+
+  const reloadStaffData = async () => {
+    setIsLoadingData(true);
+    try {
+      const [config, apiServices, apiSpecialists, gallery, requests] = await Promise.all([
+        apiService.getConfig(),
+        apiService.getServices(),
+        apiService.getSpecialists(),
+        apiService.getGallery(),
+        apiService.getBookingRequests()
+      ]);
+
+      if (config && config.id) {
+        const parseArray = (value: unknown, fallback: any[] = []) => {
+          if (Array.isArray(value)) return value;
+          if (typeof value === 'string') {
+            try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : fallback; } catch { return fallback; }
+          }
+          return fallback;
+        };
+        const loaded: SalonConfig = {
+          ...DEFAULT_CONFIG,
+          ...config,
+          calendarPublic: config.calendarPublic !== 0,
+          workingHours: parseArray(config.workingHours, DEFAULT_WORKING_HOURS),
+          blockedSlots: parseArray(config.blockedSlots),
+          vacations: parseArray(config.vacations),
+          nailShapes: parseArray(config.nailShapes, DEFAULT_CONFIG.nailShapes),
+          nailLengths: parseArray(config.nailLengths, DEFAULT_CONFIG.nailLengths),
+          nailStyles: parseArray(config.nailStyles, DEFAULT_CONFIG.nailStyles),
+          products: parseArray(config.products),
+          colors: {
+            primary: config.primaryColor || DEFAULT_CONFIG.colors.primary,
+            accent: config.accentColor || DEFAULT_CONFIG.colors.accent,
+            background: config.backgroundColor || DEFAULT_CONFIG.colors.background
+          }
+        };
+        setSalonConfig(loaded);
+        setEditingConfig(loaded);
+      } else {
+        setEditingConfig(DEFAULT_CONFIG);
+      }
+
+      setServices(Array.isArray(apiServices) ? apiServices : []);
+      setSpecialists(Array.isArray(apiSpecialists) ? apiSpecialists : []);
+      setGalleryPhotos(Array.isArray(gallery) ? gallery.map((g: any) => g.photoBase64).filter(Boolean) : []);
+      setGalleryIds(Array.isArray(gallery) ? gallery.map((g: any) => g.id) : []);
+      setBookingRequests(Array.isArray(requests) ? requests : []);
+    } finally {
+      setIsLoadingData(false);
+    }
+  };
+
+  useEffect(() => {
+    reloadStaffData();
+  }, []);
+
+  // Edit states
+  const [editingService, setEditingService] = useState<any | null>(null);
+  const [editingSpecialist, setEditingSpecialist] = useState<any | null>(null);
+  const [editingConfig, setEditingConfig] = useState<SalonConfig>(DEFAULT_CONFIG);
+
+  const handlePinSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pinInput === STAFF_PIN) {
+      sessionStorage.setItem('greenlanters_staff_auth', 'true');
+      setIsAuthenticated(true);
+      setPinError(false);
+    } else {
+      setPinError(true);
+      setPinInput('');
+    }
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('greenlanters_staff_auth');
+    setIsAuthenticated(false);
+  };
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const result = ev.target?.result as string;
+      const id = `gallery_${Date.now()}`;
+      const saved = await apiService.uploadPhoto({
+        id,
+        photoBase64: result,
+        title: '',
+        caption: ''
+      });
+      if (saved?.success) {
+        setGalleryPhotos(prev => [result, ...prev]);
+        setGalleryIds(prev => [id, ...prev]);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleConfigImageUpload = (e: React.ChangeEvent<HTMLInputElement>, field: 'logo' | 'coverPhoto') => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = ev.target?.result as string;
+        setEditingConfig(prev => ({ ...prev, [field]: result }));
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const addService = async () => {
+    const newService = {
+      id: `s${Date.now()}`,
+      name: 'Nuevo Servicio',
+      duration: null,
+      price: null,
+      description: '',
+      shortDescription: '',
+      longDescription: '',
+      category: 'diseno_personalizado',
+      featured: false,
+      sortOrder: services.length + 1,
+      instagramSource: '@greenlanters.nails'
+    };
+    const saved = await apiService.createService(newService);
+    if (saved?.success) {
+      setServices(prev => [newService, ...prev]);
+      setEditingService(newService);
+    }
+  };
+
+  const addSpecialist = async () => {
+    const newSpecialist = {
+      id: `sp${Date.now()}`,
+      name: 'Nueva especialista',
+      role: 'Nail Artist',
+      photo: '💅',
+      description: ''
+    };
+    const saved = await apiService.createSpecialist(newSpecialist);
+    if (saved?.success) {
+      setSpecialists(prev => [newSpecialist, ...prev]);
+      setEditingSpecialist(newSpecialist);
+    }
+  };
+
+  const updateAppointmentStatus = async (id: string, status: 'Confirmada' | 'Completada' | 'Cancelada') => {
+    setAppointments(prev => prev.map(a => a.id === id ? { ...a, status } : a));
+    await apiService.updateAppointment(id, { status });
+  };
+
+  const updateDesignStatus = async (id: string, status: 'Pendiente' | 'Preparado en cabina' | 'Realizado') => {
+    setCustomDesigns(prev => prev.map(d => d.id === id ? { ...d, status } : d));
+    await apiService.updateDesign(id, { status });
+  };
+
+  // SOLICITUDES DE CITA
+  const generateLocator = () => `LGN-${Math.floor(1000 + Math.random() * 9000)}`;
+
+  const confirmBookingRequest = async (request: any) => {
+    if (!request.preferredDate || !request.preferredTime) {
+      alert('Para confirmar una cita primero hay que tener fecha y hora solicitadas.');
+      return;
+    }
+    const locator = generateLocator();
+    const newAppointment: Appointment = {
+      id: `appt_${Date.now()}`,
+      locator,
+      serviceIds: [],
+      addonIds: [],
+      specialistId: 'any',
+      date: request.preferredDate,
+      time: request.preferredTime,
+      totalPrice: 0,
+      totalDuration: 0,
+      clientName: request.clientName,
+      clientPhone: request.clientPhone,
+      clientEmail: request.clientEmail,
+      notes: `Solicitud: ${request.serviceType || ''}. ${request.notes || ''}`.trim(),
+      status: 'Confirmada',
+      createdAt: new Date().toISOString()
+    };
+
+    const result = await apiService.createAppointment(newAppointment);
+    if (result?.success) {
+      setAppointments(prev => [newAppointment, ...prev]);
+      await apiService.updateBookingRequest(request.id, 'Confirmada');
+      await reloadBookingRequests();
+      alert(`Cita creada con localizador ${locator}. Recuerda ajustar servicios, especialista y precio en la pestaña Citas.`);
+    } else {
+      alert('No se pudo crear la cita. Comprueba que la API está en marcha.');
+    }
+  };
+
+  const completeBookingRequest = async (id: string) => {
+    await apiService.updateBookingRequest(id, 'Completada');
+    await reloadBookingRequests();
+  };
+
+  const deleteBookingRequest = async (id: string) => {
+    if (!confirm('¿Eliminar esta solicitud?')) return;
+    await apiService.deleteBookingRequest(id);
+    await reloadBookingRequests();
+  };
+
+  const pendingRequestsCount = bookingRequests.filter(r => r.status === 'Pendiente').length;
+
+  const filteredAppointments = selectedTech === 'all' 
+    ? appointments 
+    : appointments.filter(a => a.specialistId === selectedTech);
+
+  const totalBilling = appointments
+    .filter(a => a.status !== 'Cancelada')
+    .reduce((acc, a) => acc + a.totalPrice, 0);
+
+  const completedCount = appointments.filter(a => a.status === 'Completada').length;
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#082D05] flex items-center justify-center px-4 py-16">
+        <form onSubmit={handlePinSubmit} className="bg-[#F7F8EF] rounded-3xl p-8 sm:p-10 max-w-sm w-full text-center space-y-6 shadow-2xl border border-[#8CFF00]/40">
+          <div className="w-16 h-16 rounded-2xl bg-[#082D05] text-[#8CFF00] flex items-center justify-center mx-auto">
+            <Lock className="w-7 h-7" />
+          </div>
+          <div>
+            <span className="text-xs font-bold uppercase tracking-widest text-[#8CFF00]">Acceso Restringido</span>
+            <h1 className="font-display text-2xl font-bold text-[#082D05] mt-1">Panel Administrativo</h1>
+            <p className="text-xs text-[#082D05]/60 mt-2">Introduce el PIN para gestionar el salón.</p>
+          </div>
+          <div>
+            <input
+              type="password"
+              inputMode="numeric"
+              autoFocus
+              value={pinInput}
+              onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
+              placeholder="? ? ? ?"
+              className={`w-full text-center tracking-[0.5em] text-lg px-4 py-3 rounded-xl border text-[#082D05] focus:outline-none focus:ring-2 focus:ring-[#8CFF00] ${pinError ? 'border-rose-400' : 'border-neutral-300'}`}
+            />
+            {pinError && <p className="text-xs text-rose-500 font-semibold mt-2">PIN incorrecto.</p>}
+          </div>
+          <button
+            type="submit"
+            className="w-full py-3.5 bg-[#082D05] hover:bg-[#176B00] text-[#F7F8EF] text-xs font-bold uppercase tracking-widest rounded-xl transition-all"
+          >
+            Acceder
+          </button>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F7F8EF] pb-24 lg:pb-12 px-4 lg:px-12 py-8">
+      <div className="max-w-7xl mx-auto">
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-8 gap-4">
+          <div>
+            <span className="text-xs font-bold uppercase tracking-widest text-[#8CFF00]">Panel de Control</span>
+            <h1 className="font-display text-3xl sm:text-4xl font-bold text-[#082D05] mt-1">
+              {salonConfig.name}
+            </h1>
+          </div>
+          <button
+            onClick={handleLogout}
+            className="p-2.5 rounded-xl bg-white border border-neutral-200 text-[#082D05]/60 hover:text-rose-600 hover:border-rose-200 transition-all"
+          >
+            <LogOut className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex flex-wrap gap-2 mb-8 bg-[#F7F8EF] p-2 rounded-2xl overflow-x-auto">
+          {[
+            { id: 'config', label: 'Configuración', icon: Settings },
+            { id: 'contenidos', label: 'Contenidos', icon: FileText },
+            { id: 'galeria', label: 'Galería', icon: Image },
+            { id: 'servicios', label: 'Servicios', icon: Sparkles },
+            { id: 'especialistas', label: 'Especialistas', icon: Users },
+            { id: 'requests', label: 'Solicitudes', icon: BookmarkPlus },
+            { id: 'agenda', label: 'Citas', icon: Calendar },
+            { id: 'designs', label: 'Diseños', icon: Palette }
+          ].map(tab => {
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as any)}
+                className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all flex items-center gap-2 whitespace-nowrap relative ${
+                  activeTab === tab.id ? 'bg-[#082D05] text-[#F7F8EF] shadow-sm' : 'text-[#082D05]/70 hover:text-[#082D05]'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
+                <span>{tab.label}</span>
+                {tab.id === 'requests' && pendingRequestsCount > 0 && (
+                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-rose-500 text-white text-[10px] font-bold leading-none">
+                    {pendingRequestsCount}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* CONFIGURACIÓN */}
+        {activeTab === 'config' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
+              <h2 className="font-display text-2xl font-bold text-[#082D05] mb-6">Datos del Salón</h2>
+              
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Nombre</label>
+                    <input
+                      type="text"
+                      value={editingConfig.name}
+                      onChange={(e) => setEditingConfig({...editingConfig, name: e.target.value})}
+                      className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Email</label>
+                    <input
+                      type="email"
+                      value={editingConfig.email}
+                      onChange={(e) => setEditingConfig({...editingConfig, email: e.target.value})}
+                      className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00]"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Teléfono</label>
+                    <input
+                      type="tel"
+                      value={editingConfig.phone}
+                      onChange={(e) => setEditingConfig({...editingConfig, phone: e.target.value})}
+                      className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Dirección</label>
+                    <input
+                      type="text"
+                      value={editingConfig.address}
+                      onChange={(e) => setEditingConfig({...editingConfig, address: e.target.value})}
+                      className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00]"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Descripción</label>
+                  <textarea
+                    value={editingConfig.description}
+                    onChange={(e) => setEditingConfig({...editingConfig, description: e.target.value})}
+                    className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00] min-h-24"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Horarios</label>
+                  <textarea
+                    value={editingConfig.hours}
+                    onChange={(e) => setEditingConfig({...editingConfig, hours: e.target.value})}
+                    className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00] min-h-20"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">WhatsApp</label>
+                    <input
+                      type="tel"
+                      value={editingConfig.whatsapp}
+                      onChange={(e) => setEditingConfig({...editingConfig, whatsapp: e.target.value})}
+                      placeholder="+34 600 000 000"
+                      className="w-full px-4 py-3 border border-neutral-300 rounded-xl"
+                    />
+                  </div>
+                  <label className="flex items-center gap-3 rounded-xl border border-neutral-200 p-4 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={editingConfig.calendarPublic}
+                      onChange={(e) => setEditingConfig({...editingConfig, calendarPublic: e.target.checked})}
+                      className="w-5 h-5 accent-[#082D05]"
+                    />
+                    <span>
+                      <span className="block text-xs font-bold text-[#082D05] uppercase">Mostrar disponibilidad</span>
+                      <span className="block text-[11px] text-neutral-500">Permite que el calendario público muestre disponibilidad.</span>
+                    </span>
+                  </label>
+                </div>
+
+                <div className="rounded-2xl border border-neutral-200 p-5 space-y-4">
+                  <div>
+              <h3 className="text-sm font-bold text-[#082D05]">Horario operativo por día</h3>
+              <p className="text-[11px] text-neutral-500">La cabina podrá usar esta configuración para calcular disponibilidad.</p>
+                  </div>
+                  <div className="space-y-2">
+                    {editingConfig.workingHours.map((item, index) => (
+                      <div key={item.day} className="grid grid-cols-[90px_1fr_1fr_auto] gap-2 items-center">
+                        <span className="text-xs font-semibold">{item.day}</span>
+                        <input type="time" value={item.open} disabled={!item.enabled}
+                          onChange={(e) => setEditingConfig(prev => ({...prev, workingHours: prev.workingHours.map((h,i) => i===index ? {...h, open:e.target.value} : h)}))}
+                          className="px-2 py-2 border rounded-lg text-xs disabled:bg-neutral-100" />
+                        <input type="time" value={item.close} disabled={!item.enabled}
+                          onChange={(e) => setEditingConfig(prev => ({...prev, workingHours: prev.workingHours.map((h,i) => i===index ? {...h, close:e.target.value} : h)}))}
+                          className="px-2 py-2 border rounded-lg text-xs disabled:bg-neutral-100" />
+                        <input type="checkbox" checked={item.enabled}
+                          onChange={(e) => setEditingConfig(prev => ({...prev, workingHours: prev.workingHours.map((h,i) => i===index ? {...h, enabled:e.target.checked} : h)}))}
+                          className="w-4 h-4 accent-[#082D05]" />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Bloqueos de agenda</label>
+                    <textarea
+                      value={editingConfig.blockedSlots.join('\n')}
+                      onChange={(e) => setEditingConfig({...editingConfig, blockedSlots: e.target.value.split('\n').map(v => v.trim()).filter(Boolean)})}
+                      placeholder="2026-10-02 14:00-16:00\n2026-10-05"
+                      className="w-full px-4 py-3 border rounded-xl min-h-24 text-xs font-mono"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Vacaciones / días cerrados</label>
+                    <textarea
+                      value={editingConfig.vacations.join('\n')}
+                      onChange={(e) => setEditingConfig({...editingConfig, vacations: e.target.value.split('\n').map(v => v.trim()).filter(Boolean)})}
+                      placeholder="2026-08-10\n2026-08-11"
+                      className="w-full px-4 py-3 border rounded-xl min-h-24 text-xs font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-neutral-200 p-5 space-y-4">
+                  <h3 className="text-sm font-bold text-[#082D05]">Catálogo de cabina</h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {[
+                      ['Formas', 'nailShapes'],
+                      ['Largos', 'nailLengths'],
+                      ['Estilos', 'nailStyles'],
+                      ['Productos', 'products']
+                    ].map(([label, key]) => (
+                      <div key={key}>
+                        <label className="block text-[11px] font-bold uppercase text-neutral-600 mb-2">{label}</label>
+                        <textarea
+                          value={(editingConfig[key as keyof SalonConfig] as string[]).join('\n')}
+                          onChange={(e) => setEditingConfig({...editingConfig, [key]: e.target.value.split('\n').map(v => v.trim()).filter(Boolean)})}
+                          placeholder="Un elemento por línea"
+                          className="w-full px-3 py-2 border rounded-xl min-h-24 text-xs"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Color Primario</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="color"
+                        value={editingConfig.colors.primary}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, primary: e.target.value}})}
+                        className="w-12 h-12 rounded-lg cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={editingConfig.colors.primary}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, primary: e.target.value}})}
+                        className="flex-1 px-3 py-2 border border-neutral-300 rounded-lg text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Color Accent</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="color"
+                        value={editingConfig.colors.accent}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, accent: e.target.value}})}
+                        className="w-12 h-12 rounded-lg cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={editingConfig.colors.accent}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, accent: e.target.value}})}
+                        className="flex-1 px-3 py-2 border border-neutral-300 rounded-lg text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">Fondo</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="color"
+                        value={editingConfig.colors.background}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, background: e.target.value}})}
+                        className="w-12 h-12 rounded-lg cursor-pointer"
+                      />
+                      <input
+                        type="text"
+                        value={editingConfig.colors.background}
+                        onChange={(e) => setEditingConfig({...editingConfig, colors: {...editingConfig.colors, background: e.target.value}})}
+                        className="flex-1 px-3 py-2 border border-neutral-300 rounded-lg text-xs font-mono"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-6 border-t border-neutral-200">
+                  <button
+                    onClick={async () => {
+                      const payload = {
+                        ...editingConfig,
+                        primaryColor: editingConfig.colors.primary,
+                        accentColor: editingConfig.colors.accent,
+                        backgroundColor: editingConfig.colors.background
+                      };
+                      const saved = await apiService.updateConfig(payload);
+                      if (saved?.success) {
+                        setSalonConfig(editingConfig);
+                        alert('Configuración guardada en la base de datos.');
+                      } else {
+      alert('No se pudo guardar la configuración.');
+                      }
+                    }}
+                    className="px-6 py-3 bg-[#082D05] text-[#F7F8EF] text-xs font-bold uppercase rounded-xl hover:bg-[#176B00] transition-all flex items-center gap-2"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>Guardar Configuración</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CONTENIDOS */}
+        {activeTab === 'contenidos' && (
+          <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
+            <h2 className="font-display text-2xl font-bold text-[#082D05] mb-6">Textos y Contenidos</h2>
+            <p className="text-sm text-neutral-600 mb-6">Próximamente: Edición de textos de página principal, descripciones de servicios, testimonios y más contenido dinámico.</p>
+            <div className="bg-[#F7F8EF] p-6 rounded-xl text-center text-neutral-500">
+              <FileText className="w-12 h-12 mx-auto mb-3 opacity-40" />
+            <p className="text-sm">Módulo en desarrollo...</p>
+            </div>
+          </div>
+        )}
+
+        {/* GALERÍA */}
+        {activeTab === 'galeria' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
+              <h2 className="font-display text-2xl font-bold text-[#082D05] mb-6">Galería de Fotos</h2>
+              
+              <div className="mb-8">
+                <label className="block">
+                  <div className="border-2 border-dashed border-[#8CFF00]/40 rounded-2xl p-8 text-center cursor-pointer hover:bg-[#F7F8EF] transition-all">
+                    <Image className="w-8 h-8 mx-auto mb-3 text-[#8CFF00]" />
+                    <p className="text-sm font-semibold text-[#082D05] mb-1">Sube fotos de tu salón</p>
+                    <p className="text-xs text-neutral-500">JPG, PNG - Máx 10MB</p>
+                  </div>
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={handlePhotoUpload}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              {galleryPhotos.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {galleryPhotos.map((photo, idx) => (
+                    <div key={idx} className="relative group rounded-xl overflow-hidden aspect-square">
+                      <img src={photo} alt={`Foto ${idx}`} className="w-full h-full object-cover" />
+                      <button
+                        onClick={async () => {
+                          const id = galleryIds[idx];
+                          if (id) {
+                            const deleted = await apiService.deletePhoto(id);
+                            if (!deleted?.success) return;
+                          }
+                          setGalleryPhotos(prev => prev.filter((_, i) => i !== idx));
+                          setGalleryIds(prev => prev.filter((_, i) => i !== idx));
+                        }}
+                        className="absolute inset-0 bg-black/0 group-hover:bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                      >
+                        <Trash2 className="w-6 h-6 text-white" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SERVICIOS */}
+        {activeTab === 'servicios' && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="font-display text-2xl font-bold text-[#082D05]">Servicios & Precios</h2>
+              <button
+                onClick={addService}
+                className="px-4 py-2 bg-[#082D05] text-[#F7F8EF] text-xs font-bold rounded-lg flex items-center gap-2 hover:bg-[#176B00]"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nuevo Servicio</span>
+              </button>
+            </div>
+
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-[#F7F8EF] border-b border-neutral-200 text-[#082D05] uppercase font-semibold">
+                    <tr>
+                      <th className="p-4 text-left">Servicio</th>
+                      <th className="p-4 text-center">Duración (min)</th>
+                      <th className="p-4 text-center">Precio (€)</th>
+                      <th className="p-4 text-center">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {services.map(svc => (
+                      <tr key={svc.id} className="hover:bg-neutral-50">
+                        <td className="p-4">
+                          {editingService?.id === svc.id ? (
+                            <input
+                              type="text"
+                              value={editingService.name}
+                              onChange={(e) => setEditingService({...editingService, name: e.target.value})}
+                              className="px-3 py-2 border border-neutral-300 rounded-lg text-xs w-full"
+                            />
+                          ) : (
+                            <span className="font-semibold text-[#082D05]">{svc.name}</span>
+                          )}
+                        </td>
+                        <td className="p-4 text-center">
+                          {editingService?.id === svc.id ? (
+                            <input
+                              type="number"
+                              value={editingService.duration}
+                              onChange={(e) => setEditingService({...editingService, duration: parseInt(e.target.value)})}
+                              className="px-3 py-2 border border-neutral-300 rounded-lg text-xs w-20 mx-auto"
+                            />
+                          ) : (
+                            svc.duration == null ? '-' : svc.duration
+                          )}
+                        </td>
+                        <td className="p-4 text-center">
+                          {editingService?.id === svc.id ? (
+                            <input
+                              type="number"
+                              value={editingService.price}
+                              onChange={(e) => setEditingService({...editingService, price: parseFloat(e.target.value)})}
+                              className="px-3 py-2 border border-neutral-300 rounded-lg text-xs w-20 mx-auto"
+                            />
+                          ) : (
+                            <span className="font-bold text-[#8CFF00]">{svc.price}€</span>
+                          )}
+                        </td>
+                        <td className="p-4 text-center space-x-2">
+                          {editingService?.id === svc.id ? (
+                            <>
+                              <button
+                                onClick={async () => {
+                                  const saved = await apiService.updateService(editingService.id, editingService);
+                                  if (saved?.success) {
+                                    setServices(prev => prev.map(s => s.id === editingService.id ? editingService : s));
+                                    setEditingService(null);
+                                  }
+                                }}
+                                className="px-2 py-1 bg-[#082D05] text-[#F7F8EF] rounded text-[10px] font-bold hover:bg-[#176B00]"
+                              >
+                                Guardar
+                              </button>
+                              <button
+                                onClick={() => setEditingService(null)}
+                                className="px-2 py-1 bg-neutral-200 text-neutral-700 rounded text-[10px] font-bold hover:bg-neutral-300"
+                              >
+                                Cancelar
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => setEditingService(svc)}
+                                className="px-2 py-1 bg-neutral-100 text-[#082D05] rounded text-[10px] font-bold hover:bg-neutral-200"
+                              >
+                                <Edit2 className="w-3 h-3" />
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  const deleted = await apiService.deleteService(svc.id);
+                                  if (deleted?.success) setServices(prev => prev.filter(s => s.id !== svc.id));
+                                }}
+                                className="px-2 py-1 bg-rose-100 text-rose-700 rounded text-[10px] font-bold hover:bg-rose-200"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ESPECIALISTAS */}
+        {activeTab === 'especialistas' && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-center">
+              <h2 className="font-display text-2xl font-bold text-[#082D05]">Equipo de Especialistas</h2>
+              <button
+                onClick={addSpecialist}
+                className="px-4 py-2 bg-[#082D05] text-[#F7F8EF] text-xs font-bold rounded-lg flex items-center gap-2 hover:bg-[#176B00]"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Nuevo Especialista</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {specialists.map(spec => (
+                <div key={spec.id} className="bg-white rounded-2xl border border-[#8CFF00]/30 p-6 space-y-4">
+                  <div className="text-4xl text-center mb-3">{spec.photo}</div>
+                  {editingSpecialist?.id === spec.id ? (
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={editingSpecialist.name}
+                        onChange={(e) => setEditingSpecialist({...editingSpecialist, name: e.target.value})}
+                        placeholder="Nombre"
+                        className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-xs"
+                      />
+                      <input
+                        type="text"
+                        value={editingSpecialist.role}
+                        onChange={(e) => setEditingSpecialist({...editingSpecialist, role: e.target.value})}
+                        placeholder="Cargo"
+                        className="w-full px-3 py-2 border border-neutral-300 rounded-lg text-xs"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={async () => {
+                            const saved = await apiService.updateSpecialist(editingSpecialist.id, editingSpecialist);
+                            if (saved?.success) {
+                              setSpecialists(prev => prev.map(s => s.id === editingSpecialist.id ? editingSpecialist : s));
+                              setEditingSpecialist(null);
+                            }
+                          }}
+                          className="flex-1 px-3 py-2 bg-[#082D05] text-[#F7F8EF] rounded-lg text-xs font-bold hover:bg-[#176B00]"
+                        >
+                          Guardar
+                        </button>
+                        <button
+                          onClick={() => setEditingSpecialist(null)}
+                          className="flex-1 px-3 py-2 bg-neutral-200 text-neutral-700 rounded-lg text-xs font-bold"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <h3 className="font-bold text-[#082D05] text-center">{spec.name}</h3>
+                        <p className="text-xs text-neutral-500 text-center">{spec.role}</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => setEditingSpecialist(spec)}
+                          className="flex-1 px-3 py-2 bg-neutral-100 text-[#082D05] rounded-lg text-xs font-bold hover:bg-neutral-200"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          onClick={async () => {
+                            const deleted = await apiService.deleteSpecialist(spec.id);
+                            if (deleted?.success) setSpecialists(prev => prev.filter(s => s.id !== spec.id));
+                          }}
+                          className="flex-1 px-3 py-2 bg-rose-100 text-rose-700 rounded-lg text-xs font-bold hover:bg-rose-200"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* SOLICITUDES DE CITA */}
+        {activeTab === 'requests' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-neutral-100 flex items-center justify-between">
+                <h2 className="font-display text-2xl font-bold text-[#082D05]">Solicitudes de Cita</h2>
+                <span className="text-xs font-semibold text-neutral-500">{pendingRequestsCount} pendiente(s)</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#F7F8EF] border-b border-neutral-200 text-[#082D05] uppercase tracking-wider font-semibold">
+                    <tr>
+                      <th className="p-4">Cliente</th>
+                      <th className="p-4">Contacto</th>
+                      <th className="p-4">Servicio</th>
+                      <th className="p-4">Fecha/Hora Preferida</th>
+                      <th className="p-4">Notas</th>
+                      <th className="p-4">Estado</th>
+                      <th className="p-4 text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {bookingRequests.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="p-8 text-center text-neutral-400">
+                          No hay solicitudes de cita todavía.
+                        </td>
+                      </tr>
+                    ) : (
+                      bookingRequests.map((req) => (
+                        <tr key={req.id} className="hover:bg-neutral-50/50 transition-colors align-top">
+                          <td className="p-4 font-bold text-[#082D05]">{req.clientName}</td>
+                          <td className="p-4">
+                            <span className="block">{req.clientPhone}</span>
+                            <span className="block text-[11px] text-neutral-500">{req.clientEmail}</span>
+                          </td>
+                          <td className="p-4 font-medium">{req.serviceType}</td>
+                          <td className="p-4 font-medium">{req.preferredDate || '—'} {req.preferredTime ? `· ${req.preferredTime}h` : ''}</td>
+                          <td className="p-4 max-w-xs truncate text-neutral-600">{req.notes || '—'}</td>
+                          <td className="p-4">
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase ${
+                              req.status === 'Pendiente' ? 'bg-amber-100 text-amber-800' :
+                              req.status === 'Confirmada' ? 'bg-[#8CFF00]/20 text-[#082D05]' :
+                              req.status === 'Completada' ? 'bg-[#082D05] text-[#F7F8EF]' :
+                              'bg-neutral-100 text-neutral-600'
+                            }`}>
+                              {req.status}
+                            </span>
+                          </td>
+                          <td className="p-4 text-right space-x-2 whitespace-nowrap">
+                            {req.status === 'Pendiente' && (
+                              <button
+                                onClick={() => confirmBookingRequest(req)}
+                                className="px-2.5 py-1 bg-[#082D05] text-[#F7F8EF] rounded text-[11px] font-semibold hover:bg-[#176B00]"
+                              >
+                                Confirmar
+                              </button>
+                            )}
+                            {req.status !== 'Completada' && (
+                              <button
+                                onClick={() => completeBookingRequest(req.id)}
+                                className="px-2.5 py-1 bg-[#8CFF00]/20 text-[#082D05] rounded text-[11px] font-semibold hover:bg-[#8CFF00]/30"
+                              >
+                                Completar
+                              </button>
+                            )}
+                            <button
+                              onClick={() => deleteBookingRequest(req.id)}
+                              className="px-2.5 py-1 bg-rose-100 text-rose-700 rounded text-[11px] font-semibold hover:bg-rose-200"
+                            >
+                              Eliminar
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* AGENDA - Lo que ya existía */}
+        {activeTab === 'agenda' && (
+          <div className="space-y-8">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+              <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación Acumulada</span>
+                <span className="font-display text-3xl font-bold text-[#082D05]">{totalBilling}€</span>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Citas Totales</span>
+                <span className="font-display text-3xl font-bold text-[#082D05]">{appointments.length}</span>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Citas Completadas</span>
+                <span className="font-display text-3xl font-bold text-[#8CFF00]">{completedCount}</span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 overflow-x-auto pb-2">
+              <span className="text-xs font-semibold text-[#082D05] flex items-center gap-1.5 shrink-0">
+                <Filter className="w-3.5 h-3.5" /> Filtrar:
+              </span>
+              {[{ id: 'all', name: 'Todas' }, ...specialists.map(s => ({ id: s.id, name: s.name }))].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setSelectedTech(t.id)}
+                  className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg border transition-all shrink-0 ${
+                    selectedTech === t.id ? 'bg-[#082D05] text-[#F7F8EF] border-[#082D05]' : 'bg-white text-[#082D05] border-neutral-200 hover:border-neutral-300'
+                  }`}
+                >
+                  {t.name}
+                </button>
+              ))}
+            </div>
+
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#F7F8EF] border-b border-neutral-200 text-[#082D05] uppercase tracking-wider font-semibold">
+                    <tr>
+                      <th className="p-4">Localizador</th>
+                      <th className="p-4">Cliente</th>
+                      <th className="p-4">Servicios</th>
+                      <th className="p-4">Especialista</th>
+                      <th className="p-4">Fecha & Hora</th>
+                      <th className="p-4">Total</th>
+                      <th className="p-4">Estado</th>
+                      <th className="p-4 text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-100">
+                    {filteredAppointments.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="p-8 text-center text-neutral-400">
+                          No hay citas con este filtro.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredAppointments.map((appt) => {
+                        const staffObj = specialists.find(s => s.id === appt.specialistId);
+                        const serviceNames = appt.serviceIds.map(id => services.find(s => s.id === id)?.name).join(', ');
+
+                        return (
+                          <tr key={appt.id} className="hover:bg-neutral-50/50 transition-colors">
+                            <td className="p-4 font-mono font-bold text-[#8CFF00]">{appt.locator}</td>
+                            <td className="p-4">
+                              <span className="font-bold block text-[#082D05]">{appt.clientName}</span>
+                              <span className="text-[11px] text-neutral-500">{appt.clientPhone}</span>
+                            </td>
+                            <td className="p-4 max-w-xs truncate text-neutral-700">{serviceNames}</td>
+                            <td className="p-4 font-medium">{staffObj?.name || 'Cualquiera'}</td>
+                <td className="p-4 font-medium">{appt.date} · {appt.time}h</td>
+                            <td className="p-4 font-bold font-display">{appt.totalPrice}€</td>
+                            <td className="p-4">
+                              <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase ${
+                                appt.status === 'Confirmada' ? 'bg-[#8CFF00]/20 text-[#082D05]' :
+                                appt.status === 'Completada' ? 'bg-[#082D05] text-[#F7F8EF]' :
+                                'bg-rose-100 text-rose-700'
+                              }`}>
+                                {appt.status}
+                              </span>
+                            </td>
+                            <td className="p-4 text-right space-x-2">
+                              {appt.status !== 'Completada' && (
+                                <button
+                                  onClick={() => updateAppointmentStatus(appt.id, 'Completada')}
+                                  className="px-2.5 py-1 bg-[#082D05] text-[#F7F8EF] rounded text-[11px] font-semibold hover:bg-[#176B00]"
+                                >
+                                  Completar
+                                </button>
+                              )}
+                              {appt.status !== 'Cancelada' && (
+                                <button
+                                  onClick={() => updateAppointmentStatus(appt.id, 'Cancelada')}
+                                  className="px-2.5 py-1 bg-neutral-200 text-neutral-800 rounded text-[11px] font-semibold hover:bg-neutral-300"
+                                >
+                                  Cancelar
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* DISEÑOS */}
+        {activeTab === 'designs' && (
+          <div className="space-y-6">
+            <h2 className="font-display text-2xl font-bold text-[#082D05]">Diseños del Atelier</h2>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {customDesigns.length === 0 ? (
+                <div className="col-span-full py-16 text-center text-neutral-400 bg-white rounded-3xl border border-neutral-200">
+                  No hay diseños personalizados creados.
+                </div>
+              ) : (
+                customDesigns.map((des) => (
+                  <div key={des.id} className="bg-white rounded-2xl overflow-hidden border border-[#8CFF00]/30 shadow-sm flex flex-col">
+                    <div className="aspect-[4/3] bg-neutral-900 relative overflow-hidden flex items-center justify-center p-4">
+                      <img 
+                        src={des.imageBase64} 
+                        alt="Boceto uña" 
+                        className="max-h-full object-contain rounded-lg shadow-md border border-[#8CFF00]/40" 
+                      />
+                      <span className="absolute top-3 left-3 px-2.5 py-1 bg-[#082D05] text-[#F7F8EF] font-mono text-[10px] rounded-md">
+                        {des.code}
+                      </span>
+                    </div>
+
+                    <div className="p-5 flex flex-col flex-1 justify-between space-y-4">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <h3 className="font-display font-bold text-[#082D05]">{des.clientName}</h3>
+                        </div>
+                        <p className="text-xs text-neutral-600 bg-neutral-50 p-2.5 rounded-xl border border-neutral-200 italic">
+                          "{des.notes}"
+                        </p>
+                      </div>
+
+                      <div className="space-y-3 pt-3 border-t border-neutral-100">
+                        <select
+                          value={des.status}
+                          onChange={(e) => updateDesignStatus(des.id, e.target.value as any)}
+                          className="w-full text-xs font-semibold px-2.5 py-1 rounded-lg bg-[#F7F8EF] border border-[#8CFF00]/40 text-[#082D05]"
+                        >
+                          <option value="Pendiente">Pendiente</option>
+                          <option value="Preparado en cabina">Preparado en cabina</option>
+                          <option value="Realizado">Realizado</option>
+                        </select>
+
+                        <button
+                          onClick={() => setSelectedDesignModal(des)}
+                          className="w-full py-2 bg-neutral-100 hover:bg-neutral-200 text-[#082D05] text-xs font-semibold rounded-xl"
+                        >
+                          Ver Detalles
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
+            {/* Modal diseño */}
+        {selectedDesignModal && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl max-w-lg w-full p-6 space-y-6 relative border border-[#8CFF00]/40 shadow-2xl">
+              <div className="flex items-center justify-between">
+                <h3 className="font-display text-xl font-bold text-[#082D05]">Diseño {selectedDesignModal.code}</h3>
+                <button 
+                  onClick={() => setSelectedDesignModal(null)}
+                  className="w-8 h-8 rounded-full bg-neutral-100 text-neutral-600 flex items-center justify-center font-bold hover:bg-neutral-200"
+                >
+                  👁️
+                </button>
+              </div>
+
+              <div className="bg-neutral-900 p-4 rounded-2xl flex items-center justify-center">
+                <img src={selectedDesignModal.imageBase64} alt="Ampliación" className="max-h-96 object-contain rounded-xl" />
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <p><strong>Cliente:</strong> {selectedDesignModal.clientName}</p>
+                <p><strong>Teléfono:</strong> {selectedDesignModal.clientPhone}</p>
+                <p><strong>Notas:</strong> {selectedDesignModal.notes}</p>
+                <p><strong>Forma:</strong> {selectedDesignModal.shape}</p>
+              </div>
+
+              <button
+                onClick={() => setSelectedDesignModal(null)}
+                className="w-full py-3 bg-[#082D05] text-[#F7F8EF] text-xs font-bold uppercase rounded-xl hover:bg-[#176B00]"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
