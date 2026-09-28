@@ -1,4 +1,4 @@
-node_modules/
+﻿node_modules/
 build/
 dist/
 coverage/
@@ -6,7 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
-data/
+/data/
 greenlanters-nails-ar/
 _tmp_nail_ar/
 .local-design-backup-20260926-140840/
