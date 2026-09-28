@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Atelier Nail Art · Las Greenlanters Nails</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
-<style>
+<style>.site-nav{display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:1050px;margin:0 auto;padding:10px 16px;border-bottom:1px solid var(--line);background:rgba(6,26,4,.96);position:sticky;top:0;z-index:20}.site-nav a{color:var(--ink);text-decoration:none;padding:9px 12px;border:1px solid var(--line);border-radius:999px;font-size:13px}.site-nav a:hover{background:rgba(212,175,106,.14)}.site-nav .brand{border:0;font-family:"Cormorant Garamond",Georgia,serif;font-size:18px;color:var(--gold);padding-left:0}.site-nav .links{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}@media(max-width:600px){.site-nav{align-items:flex-start;flex-direction:column;padding:8px 10px}.site-nav .links{width:100%;justify-content:flex-start}.site-nav a{font-size:12px;padding:8px 10px}}
 :root{--gold:#d4af6a;--ink:#f6efe2;--mute:#b9c9b0;--line:rgba(212,175,106,.3);box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 *{box-sizing:border-box}
 body{margin:0;background:radial-gradient(ellipse at 30% 0,#0f3d0b,#061a04 60%) #061a04;color:var(--ink);font:15px/1.5 Inter,system-ui,sans-serif}
@@ -32,7 +32,7 @@ small{color:var(--mute)}.off{opacity:.35;pointer-events:none}
 .btn2{display:inline-block;padding:14px 20px;border-radius:12px;background:var(--gold);color:#1b2a10;font-weight:500;cursor:pointer;min-height:48px}.btn2.ghost{background:transparent;color:var(--gold);border:1px solid var(--gold)}.btn2 input{display:none}
 input,button{font-size:16px}.chip{min-height:40px}input[type=range]{height:32px}
 @media(max-width:859px){.stage{position:sticky;top:0;z-index:5;padding:8px;background:#0b2a08}#cv{max-height:44vh}.up.big{padding:40px 12px}.card{padding:14px}main{padding:8px}header{padding:14px 12px 0}h1{font-size:1.7rem}.sw{width:38px;height:38px}}
-</style></head><body>
+</style></head><body><nav class="site-nav" aria-label="Navegación principal"><a class="brand" href="/">Las Greenlanters Nails</a><div class="links"><a href="/">Inicio</a><a href="/ateliernailart.html">Atelier Nail Art</a><a href="/">Reservar cita</a><a href="https://ar.lasgreenlantersnail.es/">Realidad aumentada</a></div></nav>
 <header><h1>Atelier Nail Art</h1><p>Sube una foto de tu mano y diseña tu manicura · Las Greenlanters Nails</p></header>
 <main>
 <section class="card stage">
@@ -132,12 +132,26 @@ const d=$('drop');['dragenter','dragover'].forEach(v=>d.addEventListener(v,e=>{e
 $('dfile').onchange=e=>readImg(e.target.files[0],500,(u,w,h)=>{S.dsg=u;S.dw=w;S.dh=h;$('dbox').style.display='block';if(S.sel>=0)S.nails[S.sel].useImg=true;panel();render();toast('Diseño listo. Ajusta el encuadre.')});
 function snapshot(){return new Promise(res=>{try{render(true);const c=cv.cloneNode(true);c.setAttribute('width',S.IW);c.setAttribute('height',S.IH);const x=new XMLSerializer().serializeToString(c);render();const im=new Image();im.onload=()=>{const k=document.createElement('canvas');k.width=S.IW;k.height=S.IH;k.getContext('2d').drawImage(im,0,0);try{res(k.toDataURL('image/jpeg',.9))}catch(e){res(null)}};im.onerror=()=>res(null);im.src='data:image/svg+xml;charset=utf-8,'+encodeURIComponent(x)}catch(e){res(null)}})}
 function emit(type,p){try{if(parent!==window)parent.postMessage({source:'atelier-nailart',type,design:p},'*')}catch(e){}}
-$('book').onclick=async()=>{if(!$('name').value.trim()||!$('phone').value.trim())return toast('Indica nombre y teléfono');
- const img=await snapshot();emit('atelier:book',{cliente:{nombre:$('name').value,telefono:$('phone').value},imagenFinal:img,fotoOriginal:S.photo,disenoSubido:S.dsg,unas:S.nails.map(n=>({forma:SH[n.shape],color:n.c,color2:n.c2,acabado:FN[n.fin],adornos:n.ad.map(a=>AD[a]),disenoPropio:n.useImg}))});
- if(parent!==window)return toast('Diseño enviado. ¡Gracias!');
- const t=`Hola, quiero reservar este Nail Art.\nNombre: ${$('name').value}\nTeléfono: ${$('phone').value}\n`+S.nails.map((n,i)=>`Uña ${i+1}: ${SH[n.shape]}, ${n.c}, ${FN[n.fin]}${n.ad.length?', '+n.ad.map(a=>AD[a]).join('+'):''}${n.useImg?', diseño propio':''}`).join('\n');
- if(CONTACTO.whatsapp)location.href='https://wa.me/'+CONTACTO.whatsapp+'?text='+encodeURIComponent(t);
- else if(CONTACTO.email)location.href='mailto:'+CONTACTO.email+'?subject='+encodeURIComponent('Reserva Nail Art')+'&body='+encodeURIComponent(t);
- else toast('Diseño preparado')};
+async function saveAndBook(){
+ const nombre=$('name').value.trim(),telefono=$('phone').value.trim();
+ if(!nombre||!telefono)return toast('Indica nombre y teléfono');
+ if(!S.photo||!S.nails.length)return toast('Primero prepara tu diseño');
+ const btn=$('book');btn.disabled=true;btn.textContent='Enviando diseño...';
+ const img=await snapshot();
+ const unas=S.nails.map(n=>({forma:SH[n.shape],color:n.c,color2:n.c2,acabado:FN[n.fin],adornos:n.ad.map(a=>AD[a]),disenoPropio:n.useImg}));
+ const designId=`atelier-${Date.now()}`,code=`AT-${Date.now().toString().slice(-8)}`;
+ try{
+  const designRes=await fetch('/api/designs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:designId,code,clientName:nombre,clientPhone:telefono,clientEmail:'',shape:S.nails[0]?.shape||'almond',notes:JSON.stringify({origen:'Atelier Nail Art',unas,disenoSubido:!!S.dsg}),imageBase64:img||S.photo})});
+  if(!designRes.ok)throw new Error('No se pudo guardar el diseño');
+  const bookingRes=await fetch('/api/booking-request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientName:nombre,clientPhone:telefono,clientEmail:'',serviceType:'Atelier Nail Art',preferredDate:'',preferredTime:'',notes:`Código de diseño: ${code}\nDiseño guardado en Cabina Staff.\n${JSON.stringify({unas,disenoSubido:!!S.dsg})}`,createdAt:new Date().toISOString()})});
+  if(!bookingRes.ok)throw new Error('El diseño se guardó, pero no se pudo crear la solicitud de cita');
+  emit('atelier:book',{id:designId,code,cliente:{nombre,telefono},imagenFinal:img,fotoOriginal:S.photo,disenoSubido:S.dsg,unas});
+  btn.textContent='✓ Diseño enviado correctamente';toast(`Diseño ${code} enviado. Solicitud registrada.`);
+  const t=`Hola, quiero reservar este Nail Art.\nCódigo: ${code}\nNombre: ${nombre}\nTeléfono: ${telefono}\n`+unas.map((n,i)=>`Uña ${i+1}: ${n.forma}, ${n.color}, ${n.acabado}${n.adornos.length?', '+n.adornos.join('+'):''}${n.disenoPropio?', diseño propio':''}`).join('\n');
+  if(CONTACTO.whatsapp)location.href='https://wa.me/'+CONTACTO.whatsapp+'?text='+encodeURIComponent(t);
+  else if(CONTACTO.email)location.href='mailto:'+CONTACTO.email+'?subject='+encodeURIComponent('Reserva Nail Art '+code)+'&body='+encodeURIComponent(t);
+ }catch(err){console.error(err);btn.disabled=false;btn.textContent='Enviar mi diseño para reservar';toast(err.message||'No se pudo enviar el diseño');}
+}
+$('book').onclick=saveAndBook;
 panel();
 </script></body></html>
