@@ -15,7 +15,7 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/package*.json ./
 COPY --from=build /app/server.js ./server.js
 COPY --from=build /app/templates ./templates
-COPY --from=build /app/data ./data
+RUN mkdir -p /app/data
 COPY --from=build /app/public ./public
 RUN npm ci --legacy-peer-deps --omit=dev
 ENV NODE_ENV=production
