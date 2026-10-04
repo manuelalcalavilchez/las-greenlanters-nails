@@ -1,23 +1,11 @@
-import React, { useEffect, useState } from 'react';
+﻿import React from 'react';
 import { MessageCircle } from 'lucide-react';
-import { apiService } from '../data/api';
+
+const WHATSAPP_NUMBER = '34614118598';
 
 export const WhatsAppButton: React.FC = () => {
-  const [whatsapp, setWhatsapp] = useState('');
-
-  useEffect(() => {
-    let active = true;
-    apiService.getConfig().then((config: any) => {
-      if (!active || !config) return;
-      setWhatsapp(String(config.whatsapp || '').trim());
-    }).catch(() => {});
-    return () => { active = false; };
-  }, []);
-
-  const normalized = whatsapp.replace(/\D/g, '');
-  if (!normalized) return null;
-
-  const href = `https://wa.me/${normalized}`;
+  const href = 'https://wa.me/' + WHATSAPP_NUMBER + '?text=' +
+    encodeURIComponent('Hola, vengo de la web de Las Greenlanters Nails');
 
   return (
     <a
@@ -33,3 +21,4 @@ export const WhatsAppButton: React.FC = () => {
     </a>
   );
 };
+
