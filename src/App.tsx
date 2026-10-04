@@ -9,6 +9,7 @@ import { NailStudioEditor } from './components/NailStudioEditor';
 import { BookingRequest } from './components/BookingRequest';
 import { AdminPanel } from './components/AdminPanel';
 import { MyBookingsView } from './components/MyBookingsView';
+import { WhatsAppButton } from './components/WhatsAppButton';
 import { Appointment, CustomDesign, GiftCard, NailCatalogStyle } from './types';
 import { NAIL_STYLES_CATALOG } from './data/mockData';
 import { apiService } from './data/api';
@@ -171,6 +172,8 @@ export default function App() {
         activeTab={activeTab} 
         setActiveTab={setActiveTab} 
       />
+
+      <WhatsAppButton />
     </div>
   );
 }
