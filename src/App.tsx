@@ -37,21 +37,10 @@ export default function App() {
     return [];
   });
 
-  // Carga inicial de citas y diseños desde la base de datos (API -> server.js -> SQLite)
+  // Los datos privados de citas y diseños se cargan únicamente desde Cabina Staff.
+  // La web pública no debe consultar endpoints protegidos al arrancar.
   useEffect(() => {
-    let cancelled = false;
-    const loadData = async () => {
-      const [appts, designs] = await Promise.all([
-        apiService.getAppointments(),
-        apiService.getDesigns()
-      ]);
-      if (cancelled) return;
-      setAppointments(Array.isArray(appts) ? appts : []);
-      setCustomDesigns(Array.isArray(designs) ? designs : []);
-      setIsLoadingData(false);
-    };
-    loadData();
-    return () => { cancelled = true; };
+    setIsLoadingData(false);
   }, []);
 
   useEffect(() => {
