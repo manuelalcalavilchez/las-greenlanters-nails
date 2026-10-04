@@ -17,9 +17,11 @@ export const WhatsAppButton: React.FC = () => {
   const normalized = whatsapp.replace(/\D/g, '');
   if (!normalized) return null;
 
+  const href = `https://wa.me/${normalized}`;
+
   return (
     <a
-      href={`https://wa.me/${normalized}`}
+      href={href}
       target="_blank"
       rel="noreferrer"
       aria-label="Contactar por WhatsApp"
