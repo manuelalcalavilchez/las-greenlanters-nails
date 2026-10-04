@@ -523,7 +523,7 @@ END:VCALENDAR`;
               </button>
 
               <a
-        href=`https://wa.me/34690123456?text=Hola,%20tengo%20la%20cita%20con%20localizador%20\${createdAppointment.locator}%20para%20el%20día%20\${createdAppointment.date}%20a%20las%20\${createdAppointment.time}h.%20¡Confirmada!`
+                href={`https://wa.me/34614118598?text=Hola,%20tengo%20la%20cita%20con%20localizador%20${createdAppointment.locator}%20para%20el%20dia%20${createdAppointment.date}%20a%20las%20${createdAppointment.time}h.%20Confirmada!`}
                 target="_blank"
                 rel="noreferrer"
                 className="w-full sm:w-auto px-6 py-3.5 bg-[#8CFF00] text-[#082D05] text-xs font-bold uppercase tracking-widest rounded-xl hover:bg-[#70CC00] flex items-center justify-center gap-2"

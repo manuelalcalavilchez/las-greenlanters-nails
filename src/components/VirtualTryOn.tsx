@@ -439,7 +439,7 @@ export const VirtualTryOn: React.FC<VirtualTryOnProps> = ({ setActiveTab, select
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-[#082D05]">Mover Posición (X / Y)</span>
                       <div className="flex gap-1.5">
-                        <button onClick={() => handleTransformChange('x', -5)} className=""px-2 py-1 bg-neutral-100 rounded"">←</button>
+                        <button onClick={() => handleTransformChange('x', -5)} className="px-2 py-1 bg-neutral-100 rounded">?</button>
                         <button onClick={() => handleTransformChange('x', 5)} className="px-2 py-1 bg-neutral-100 rounded">→</button>
                         <button onClick={() => handleTransformChange('y', -5)} className="px-2 py-1 bg-neutral-100 rounded">↑</button>
                         <button onClick={() => handleTransformChange('y', 5)} className="px-2 py-1 bg-neutral-100 rounded">↓</button>

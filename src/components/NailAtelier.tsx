@@ -274,7 +274,7 @@ export const NailAtelier: React.FC<NailAtelierProps> = ({ onSaveDesign }) => {
             Diseñar Otro
               </button>
               <a
-              href=`https://wa.me/34690123456?text=Hola,%20he%20creado%20el%20diseño%20personalizado%20con%20código%20\${submittedCode}.%20Me%20gustaría%20reservar%20cita.`
+                href={`https://wa.me/34614118598?text=Hola,%20he%20creado%20el%20diseno%20personalizado%20con%20codigo%20${submittedCode}.%20Me%20gustaria%20reservar%20cita.`}
                 target="_blank"
                 rel="noreferrer"
                 className="flex-1 py-3 bg-[#8CFF00] text-[#082D05] text-xs font-bold uppercase tracking-widest rounded-xl hover:bg-[#70CC00] flex items-center justify-center gap-2"
