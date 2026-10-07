@@ -96,6 +96,20 @@ export const apiService = {
   async updateInvoice(id: string, data: any) { try { const res = await apiFetch(API_BASE + '/invoices/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); return res.json(); } catch (err) { return { error: err }; } },
   async issueInvoice(id: string) { try { const res = await apiFetch(API_BASE + '/invoices/' + id + '/issue', { method: 'POST' }); return res.json(); } catch (err) { return { error: err }; } },
   async cancelInvoice(id: string) { try { const res = await apiFetch(API_BASE + '/invoices/' + id + '/cancel', { method: 'POST' }); return res.json(); } catch (err) { return { error: err }; } },
+  async printInvoice(id: string) {
+    try {
+      const res = await apiFetch(API_BASE + '/invoices/' + id + '/print');
+      if (!res.ok) return { success: false, error: 'No se pudo abrir la factura' };
+      const html = await res.text();
+      const blobUrl = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const popup = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+      if (!popup) return { success: false, error: 'El navegador bloqueo la ventana de impresion' };
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: 'No se pudo abrir la factura' };
+    }
+  },
 
   // DISEÑOS
   async getDesigns() {
