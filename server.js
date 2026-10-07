@@ -293,8 +293,8 @@ const initDatabase = async () => {
         `INSERT INTO salón_config
          (id, name, description, phone, email, address, hours, logo, coverPhoto,
           primaryColor, accentColor, backgroundColor, whatsapp, calendarPublic,
-          workingHours, blockedSlots, vacations, nailShapes, nailLengths, nailStyles, products, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          workingHours, blockedSlots, vacations, nailShapes, nailLengths, nailStyles, products, content, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           'main', 'Las Greenlanters Nails',
           'Manicurista  Tcnica en uñas gel y poligel  Dibujos a mano, decoracin  Almera  Tus manos hablan por ti, haz que destaquen',
