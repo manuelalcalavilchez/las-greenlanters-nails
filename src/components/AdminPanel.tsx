@@ -3,8 +3,6 @@ import { Calendar, Users, Palette, CheckCircle2, Clock, XCircle, Phone, Sparkles
 import { Appointment, CustomDesign, NailCatalogStyle } from '../types';
 import { apiService } from '../data/api';
 
-// This is only a client-side local gate, not real authentication. Use server-side auth before public deployment of Staff.
-const STAFF_PIN = import.meta.env.VITE_STAFF_PIN || '';
 
 interface SalonConfig {
   name: string;
@@ -105,7 +103,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setCatalogStyles,
   onAddToCatalog
 }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('greenlanters_staff_auth') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => apiService.hasStaffSession());
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests' | 'facturacion'>('config');
@@ -191,8 +189,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   useEffect(() => {
-    reloadStaffData();
-  }, []);
+    if (isAuthenticated) reloadStaffData();
+  }, [isAuthenticated]);
 
   // Edit states
   const [editingService, setEditingService] = useState<any | null>(null);
@@ -201,12 +199,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput === STAFF_PIN) {
+    const result = await apiService.loginStaff(pinInput);
+    if (result?.success) {
       sessionStorage.setItem('greenlanters_staff_auth', 'true');
       setIsAuthenticated(true);
       setPinError(false);
+      setPinInput('');
     } else {
       setPinError(true);
       setPinInput('');
@@ -214,7 +214,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem('greenlanters_staff_auth');
+    apiService.logoutStaff();
     setIsAuthenticated(false);
   };
 
