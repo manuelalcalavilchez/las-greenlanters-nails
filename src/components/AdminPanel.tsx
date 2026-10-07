@@ -199,6 +199,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingSpecialist, setEditingSpecialist] = useState<any | null>(null);
   const [editingConfig, setEditingConfig] = useState<SalonConfig>(DEFAULT_CONFIG);
   const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
+  const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
 
   const handlePinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -296,6 +297,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (saved?.success) { setAppointments(prev => prev.map(a => a.id === editingAppointment.id ? editingAppointment : a)); setEditingAppointment(null); alert('Cita actualizada correctamente.'); }
     else alert('No se pudo actualizar la cita.');
   };
+
+  const createInvoiceDraft = async (appointmentId: string) => { const result = await apiService.createInvoiceDraftFromAppointment(appointmentId); if (result?.success) { setInvoices(prev => [result.invoice, ...prev]); setSelectedInvoice(result.invoice); } else alert(result?.error || 'No se pudo crear el borrador.'); };
+
+  const saveInvoice = async () => { if (!selectedInvoice) return; const result = await apiService.updateInvoice(selectedInvoice.id, selectedInvoice); if (result?.success) { const fresh = await apiService.getInvoices(); setInvoices(Array.isArray(fresh) ? fresh : []); setSelectedInvoice((fresh || []).find((i:any)=>i.id===selectedInvoice.id) || selectedInvoice); alert('Borrador guardado.'); } else alert(result?.error || 'No se pudo guardar la factura.'); };
+
+  const issueSelectedInvoice = async () => { if (!selectedInvoice) return; if (!selectedInvoice.clientTaxId) { alert('Introduce el NIF/CIF del cliente antes de emitir.'); return; } if (!confirm('Una vez emitida, la factura no se podrá editar. ¿Emitirla ahora?')) return; const result = await apiService.issueInvoice(selectedInvoice.id); if (result?.success) { const fresh = await apiService.getInvoices(); setInvoices(Array.isArray(fresh) ? fresh : []); setSelectedInvoice((fresh || []).find((i:any)=>i.id===selectedInvoice.id) || {...selectedInvoice,status:'Emitida',number:result.number,recordHash:result.recordHash}); alert('Factura emitida: ' + result.number); } else alert(result?.error || 'No se pudo emitir la factura.'); };
 
   const updateAppointmentStatus = async (id: string, status: 'Confirmada' | 'Completada' | 'Cancelada') => {
     setAppointments(prev => prev.map(a => a.id === id ? { ...a, status } : a));
