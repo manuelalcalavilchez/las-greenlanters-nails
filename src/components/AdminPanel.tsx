@@ -430,6 +430,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             { id: 'servicios', label: 'Servicios', icon: Sparkles },
             { id: 'especialistas', label: 'Especialistas', icon: Users },
             { id: 'requests', label: 'Solicitudes', icon: BookmarkPlus },
+            { id: 'facturacion', label: 'Facturación', icon: FileText },
             { id: 'agenda', label: 'Citas', icon: Calendar },
             { id: 'designs', label: 'Diseños', icon: Palette }
           ].map(tab => {
@@ -519,6 +520,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onChange={(e) => setEditingConfig({...editingConfig, hours: e.target.value})}
                     className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00] min-h-20"
                   />
+                </div>
+
+                <div className="rounded-2xl border border-[#8CFF00]/30 bg-[#F7F8EF] p-5 space-y-5">
+                  <div><h3 className="text-sm font-bold text-[#082D05]">Facturación</h3><p className="text-[11px] text-neutral-500 mt-1">Datos que aparecerán en las facturas. El NIF/CIF es obligatorio antes de emitir una factura.</p></div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div><label className="block text-xs font-bold mb-2 uppercase">Nombre fiscal</label><input value={editingConfig.legalName} onChange={e=>setEditingConfig({...editingConfig,legalName:e.target.value})} className="w-full px-4 py-3 border rounded-xl" /></div>
+                    <div><label className="block text-xs font-bold mb-2 uppercase">NIF / CIF</label><input value={editingConfig.taxId} onChange={e=>setEditingConfig({...editingConfig,taxId:e.target.value.toUpperCase()})} placeholder="Ej. 12345678A" className="w-full px-4 py-3 border rounded-xl font-mono" /></div>
+                    <div><label className="block text-xs font-bold mb-2 uppercase">Prefijo de factura</label><input value={editingConfig.invoicePrefix} onChange={e=>setEditingConfig({...editingConfig,invoicePrefix:e.target.value.toUpperCase().replace(/[^A-Z0-9-]/g,'').slice(0,8)})} className="w-full px-4 py-3 border rounded-xl font-mono" /></div>
+                    <div><label className="block text-xs font-bold mb-2 uppercase">Siguiente número</label><input type="number" min="1" value={editingConfig.invoiceNextNumber} onChange={e=>setEditingConfig({...editingConfig,invoiceNextNumber:Number(e.target.value)||1})} className="w-full px-4 py-3 border rounded-xl" /></div>
+                    <div><label className="block text-xs font-bold mb-2 uppercase">IVA (%)</label><input type="number" min="0" max="100" step="0.01" value={editingConfig.defaultVat} onChange={e=>setEditingConfig({...editingConfig,defaultVat:Number(e.target.value)})} className="w-full px-4 py-3 border rounded-xl" /></div>
+                    <label className="flex items-center gap-3 rounded-xl border border-neutral-200 bg-white p-4 cursor-pointer"><input type="checkbox" checked={editingConfig.pricesIncludeVat} onChange={e=>setEditingConfig({...editingConfig,pricesIncludeVat:e.target.checked})} className="w-5 h-5 accent-[#082D05]" /><span><span className="block text-xs font-bold uppercase">Los precios incluyen IVA</span><span className="block text-[11px] text-neutral-500">Recomendado si los precios mostrados al público son finales.</span></span></label>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
