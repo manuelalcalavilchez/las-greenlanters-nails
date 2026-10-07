@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bodyParser from 'body-parser';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -241,6 +242,15 @@ const initDatabase = async () => {
       )
     `);
 
+    // Tabla de facturación
+    await dbRun(`CREATE TABLE IF NOT EXISTS invoices (id TEXT PRIMARY KEY, appointmentId TEXT, number TEXT UNIQUE, status TEXT, issueDate TEXT, dueDate TEXT, clientName TEXT, clientTaxId TEXT, clientEmail TEXT, clientPhone TEXT, clientAddress TEXT, lines TEXT, subtotal REAL, vatRate REAL, vatAmount REAL, total REAL, paymentMethod TEXT, notes TEXT, previousHash TEXT, recordHash TEXT, qrPayload TEXT, createdAt TEXT, updatedAt TEXT)`);
+    await ensureColumn('salón_config', 'legalName', 'TEXT');
+    await ensureColumn('salón_config', 'taxId', 'TEXT');
+    await ensureColumn('salón_config', 'invoicePrefix', "TEXT DEFAULT 'F'");
+    await ensureColumn('salón_config', 'invoiceNextNumber', 'INTEGER DEFAULT 1');
+    await ensureColumn('salón_config', 'defaultVat', 'REAL DEFAULT 21');
+    await ensureColumn('salón_config', 'pricesIncludeVat', 'INTEGER DEFAULT 1');
+
     // Tabla de galera
     await dbRun(`
       CREATE TABLE IF NOT EXISTS gallery (
@@ -293,8 +303,8 @@ const initDatabase = async () => {
         `INSERT INTO salón_config
          (id, name, description, phone, email, address, hours, logo, coverPhoto,
           primaryColor, accentColor, backgroundColor, whatsapp, calendarPublic,
-          workingHours, blockedSlots, vacations, nailShapes, nailLengths, nailStyles, products, content, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          workingHours, blockedSlots, vacations, nailShapes, nailLengths, nailStyles, products, content, legalName, taxId, invoicePrefix, invoiceNextNumber, defaultVat, pricesIncludeVat, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           'main', 'Las Greenlanters Nails',
           'Manicurista  Tcnica en uñas gel y poligel  Dibujos a mano, decoracin  Almera  Tus manos hablan por ti, haz que destaquen',
@@ -474,7 +484,7 @@ app.put('/api/config', async (req, res) => {
       name, description, phone, email, address, hours, logo, coverPhoto,
       primaryColor, accentColor, backgroundColor, whatsapp, calendarPublic,
       workingHours, blockedSlots, vacations, nailShapes, nailLengths,
-      nailStyles, products, content
+      nailStyles, products, content, legalName, taxId, invoicePrefix, invoiceNextNumber, defaultVat, pricesIncludeVat
     } = req.body;
 
     const existing = await dbGet('SELECT id FROM salón_config WHERE id = ?', ['main']);
@@ -490,6 +500,7 @@ app.put('/api/config', async (req, res) => {
       JSON.stringify(nailStyles ?? []),
       JSON.stringify(products ?? []),
       typeof content === 'string' ? content : JSON.stringify(content ?? {}),
+      legalName || name, taxId || '', invoicePrefix || 'F', Number(invoiceNextNumber) || 1, Number(defaultVat ?? 21), pricesIncludeVat === undefined ? 1 : (pricesIncludeVat ? 1 : 0),
       new Date().toISOString()
     ];
 
@@ -499,7 +510,7 @@ app.put('/api/config', async (req, res) => {
          SET name = ?, description = ?, phone = ?, email = ?, address = ?, hours = ?,
              logo = ?, coverPhoto = ?, primaryColor = ?, accentColor = ?, backgroundColor = ?,
              whatsapp = ?, calendarPublic = ?, workingHours = ?, blockedSlots = ?, vacations = ?,
-             nailShapes = ?, nailLengths = ?, nailStyles = ?, products = ?, content = ?, updatedAt = ?
+             nailShapes = ?, nailLengths = ?, nailStyles = ?, products = ?, content = ?, legalName = ?, taxId = ?, invoicePrefix = ?, invoiceNextNumber = ?, defaultVat = ?, pricesIncludeVat = ?, updatedAt = ?
          WHERE id = ?`,
         [...values, 'main']
       );
@@ -521,6 +532,12 @@ app.put('/api/config', async (req, res) => {
   }
 });
 
+// FACTURACIÓN
+app.get('/api/invoices', async (req,res)=>{try{const rows=await dbAll('SELECT * FROM invoices ORDER BY createdAt DESC');res.json(rows.map(i=>({...i,lines:JSON.parse(i.lines||'[]')})));}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/draft-from-appointment/:appointmentId',async(req,res)=>{try{const a=await dbGet('SELECT * FROM appointments WHERE id=?',[req.params.appointmentId]);if(!a)return res.status(404).json({error:'Cita no encontrada'});if(a.status==='Cancelada')return res.status(400).json({error:'No se puede facturar una cita cancelada'});const ex=await dbGet('SELECT id FROM invoices WHERE appointmentId=? AND status!=?',[a.id,'Anulada']);if(ex)return res.status(409).json({error:'Esta cita ya tiene una factura o borrador',invoiceId:ex.id});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const ss=await dbAll('SELECT * FROM services WHERE active=1');const ids=JSON.parse(a.serviceIds||'[]');const lines=ids.map(id=>ss.find(s=>s.id===id)).filter(Boolean).map(s=>({description:s.name,quantity:1,unitPrice:Number(s.price)||0}));if(!lines.length)lines.push({description:'Servicio de manicura',quantity:1,unitPrice:Number(a.totalPrice)||0});const total=Number(a.totalPrice)||lines.reduce((x,l)=>x+l.unitPrice*l.quantity,0);const rate=Number(cfg?.defaultVat??21);const incl=Number(cfg?.pricesIncludeVat??1)===1;const subtotal=incl?total/(1+rate/100):total;const vat=incl?total-subtotal:total*rate/100;const now=new Date().toISOString();const inv={id:'inv_'+Date.now(),appointmentId:a.id,number:null,status:'Borrador',issueDate:now.slice(0,10),dueDate:now.slice(0,10),clientName:a.clientName||'',clientTaxId:'',clientEmail:a.clientEmail||'',clientPhone:a.clientPhone||'',clientAddress:'',lines,subtotal:+subtotal.toFixed(2),vatRate:rate,vatAmount:+vat.toFixed(2),total:+total.toFixed(2),paymentMethod:'Efectivo',notes:'',previousHash:null,recordHash:null,qrPayload:null,createdAt:now,updatedAt:now};await dbRun('INSERT INTO invoices (id,appointmentId,number,status,issueDate,dueDate,clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,subtotal,vatRate,vatAmount,total,paymentMethod,notes,previousHash,recordHash,qrPayload,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[inv.id,inv.appointmentId,null,inv.status,inv.issueDate,inv.dueDate,inv.clientName,inv.clientTaxId,inv.clientEmail,inv.clientPhone,inv.clientAddress,JSON.stringify(lines),inv.subtotal,inv.vatRate,inv.vatAmount,inv.total,inv.paymentMethod,inv.notes,null,null,null,now,now]);res.json({success:true,invoice:inv});}catch(e){res.status(500).json({error:e.message});}});
+app.put('/api/invoices/:id',async(req,res)=>{try{const cur=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!cur)return res.status(404).json({error:'Factura no encontrada'});if(cur.status==='Emitida')return res.status(409).json({error:'Una factura emitida no se edita; debe rectificarse'});const {clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,vatRate,paymentMethod,notes,issueDate,dueDate}=req.body;const safe=Array.isArray(lines)?lines:JSON.parse(cur.lines||'[]');const gross=safe.reduce((x,l)=>x+(Number(l.quantity)||0)*(Number(l.unitPrice)||0),0);const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const incl=Number(cfg?.pricesIncludeVat??1)===1;const rate=Number(vatRate??cur.vatRate??21);const subtotal=incl?gross/(1+rate/100):gross;const vat=incl?gross-subtotal:gross*rate/100;const total=incl?gross:gross+vat;await dbRun('UPDATE invoices SET clientName=?,clientTaxId=?,clientEmail=?,clientPhone=?,clientAddress=?,lines=?,subtotal=?,vatRate=?,vatAmount=?,total=?,paymentMethod=?,notes=?,issueDate=?,dueDate=?,updatedAt=? WHERE id=?',[clientName??cur.clientName,clientTaxId??cur.clientTaxId,clientEmail??cur.clientEmail,clientPhone??cur.clientPhone,clientAddress??cur.clientAddress,JSON.stringify(safe),+subtotal.toFixed(2),rate,+vat.toFixed(2),+total.toFixed(2),paymentMethod??cur.paymentMethod,notes??cur.notes,issueDate??cur.issueDate,dueDate??cur.dueDate,new Date().toISOString(),cur.id]);res.json({success:true});}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/:id/issue',async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});if(inv.status==='Emitida')return res.status(409).json({error:'La factura ya está emitida'});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);if(!cfg?.taxId)return res.status(400).json({error:'Configura primero el NIF/CIF del emisor en Configuración > Facturación'});const seq=Number(cfg.invoiceNextNumber||1);const number=(cfg.invoicePrefix||'F')+String(seq).padStart(4,'0');const prev=await dbGet("SELECT recordHash FROM invoices WHERE status='Emitida' ORDER BY createdAt DESC LIMIT 1");const previousHash=prev?.recordHash||'';const record={...inv,number,previousHash,lines:JSON.parse(inv.lines||'[]')};const recordHash=crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex');const qrPayload='FACTURA|'+number+'|'+cfg.taxId+'|'+Number(inv.total).toFixed(2)+'|'+inv.issueDate+'|'+recordHash;await dbRun("UPDATE invoices SET number=?,status='Emitida',previousHash=?,recordHash=?,qrPayload=?,updatedAt=? WHERE id=?",[number,previousHash,recordHash,qrPayload,new Date().toISOString(),inv.id]);await dbRun('UPDATE salón_config SET invoiceNextNumber=? WHERE id=?',[seq+1,'main']);res.json({success:true,number,recordHash,qrPayload});}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/:id/cancel',async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});await dbRun("UPDATE invoices SET status='Anulada',updatedAt=? WHERE id=?",[new Date().toISOString(),inv.id]);res.json({success:true,warning:inv.status==='Emitida'?'La anulación queda registrada; para una rectificación fiscal completa debe emitirse la factura rectificativa correspondiente.':null});}catch(e){res.status(500).json({error:e.message});}});
 // SERVICIOS
 app.get('/api/services', async (req, res) => {
   try {
