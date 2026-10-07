@@ -24,6 +24,12 @@ interface SalonConfig {
   nailLengths: string[];
   nailStyles: string[];
   products: string[];
+  legalName: string;
+  taxId: string;
+  invoicePrefix: string;
+  invoiceNextNumber: number;
+  defaultVat: number;
+  pricesIncludeVat: boolean;
   content: {
     heroEyebrow: string; heroTitle: string; heroHighlight: string; heroText: string;
     servicesEyebrow: string; servicesTitle: string; servicesIntro: string;
@@ -75,6 +81,7 @@ const DEFAULT_CONFIG: SalonConfig = {
   nailLengths: [],
   nailStyles: [],
   products: [],
+  legalName: 'Las Greenlanters Nails', taxId: '', invoicePrefix: 'F', invoiceNextNumber: 1, defaultVat: 21, pricesIncludeVat: true,
   content: {
     heroEyebrow: 'Las Greenlanters Nails · Almería', heroTitle: 'Tus manos hablan por ti.', heroHighlight: 'Haz que destaquen.',
     heroText: 'Manicurista · Técnica en uñas gel y poligel · Dibujos a mano · Decoración.',
@@ -101,7 +108,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('greenlanters_staff_auth') === 'true');
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests'>('config');
+  const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests' | 'facturacion'>('config');
   const [selectedTech, setSelectedTech] = useState<string>('all');
   const [selectedDesignModal, setSelectedDesignModal] = useState<CustomDesign | null>(null);
 
@@ -112,6 +119,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [services, setServices] = useState<any[]>([]);
   const [specialists, setSpecialists] = useState<any[]>([]);
   const [bookingRequests, setBookingRequests] = useState<any[]>([]);
+  const [invoices, setInvoices] = useState<any[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
 
   const reloadBookingRequests = async () => {
@@ -122,13 +130,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadStaffData = async () => {
     setIsLoadingData(true);
     try {
-      const [config, apiServices, apiSpecialists, gallery, requests, apiAppointments] = await Promise.all([
+      const [config, apiServices, apiSpecialists, gallery, requests, apiAppointments, apiInvoices] = await Promise.all([
         apiService.getConfig(),
         apiService.getServices(),
         apiService.getSpecialists(),
         apiService.getGallery(),
         apiService.getBookingRequests(),
-        apiService.getAppointments()
+        apiService.getAppointments(),
+        apiService.getInvoices()
       ]);
 
       if (config && config.id) {
@@ -142,6 +151,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         const loaded: SalonConfig = {
           ...DEFAULT_CONFIG,
           ...config,
+          legalName: config.legalName || config.name || DEFAULT_CONFIG.legalName,
+          taxId: config.taxId || '', invoicePrefix: config.invoicePrefix || 'F', invoiceNextNumber: Number(config.invoiceNextNumber) || 1,
+          defaultVat: Number(config.defaultVat ?? 21), pricesIncludeVat: config.pricesIncludeVat === undefined ? true : config.pricesIncludeVat !== 0,
           calendarPublic: config.calendarPublic !== 0,
           workingHours: parseArray(config.workingHours, DEFAULT_WORKING_HOURS),
           blockedSlots: parseArray(config.blockedSlots),
@@ -172,6 +184,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setGalleryIds(Array.isArray(gallery) ? gallery.map((g: any) => g.id) : []);
       setBookingRequests(Array.isArray(requests) ? requests : []);
       setAppointments(Array.isArray(apiAppointments) ? apiAppointments : []);
+      setInvoices(Array.isArray(apiInvoices) ? apiInvoices : []);
     } finally {
       setIsLoadingData(false);
     }
