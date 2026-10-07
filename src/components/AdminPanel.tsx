@@ -24,6 +24,12 @@ interface SalonConfig {
   nailLengths: string[];
   nailStyles: string[];
   products: string[];
+  content: {
+    heroEyebrow: string; heroTitle: string; heroHighlight: string; heroText: string;
+    servicesEyebrow: string; servicesTitle: string; servicesIntro: string;
+    galleryEyebrow: string; galleryTitle: string; galleryIntro: string;
+    ctaTitle: string; ctaText: string; instagramHandle: string;
+  };
   colors: {
     primary: string;
     accent: string;
@@ -69,6 +75,13 @@ const DEFAULT_CONFIG: SalonConfig = {
   nailLengths: [],
   nailStyles: [],
   products: [],
+  content: {
+    heroEyebrow: 'Las Greenlanters Nails · Almería', heroTitle: 'Tus manos hablan por ti.', heroHighlight: 'Haz que destaquen.',
+    heroText: 'Manicurista · Técnica en uñas gel y poligel · Dibujos a mano · Decoración.',
+    servicesEyebrow: 'Servicios', servicesTitle: 'Técnicas y decoración', servicesIntro: 'Trabajos personalizados pensados para ti.',
+    galleryEyebrow: 'Galería', galleryTitle: 'Trabajos reales', galleryIntro: 'Una selección de nuestros trabajos.',
+    ctaTitle: 'Nail art con personalidad.', ctaText: 'Almería · @greenlanters.nails', instagramHandle: '@greenlanters.nails'
+  },
   colors: {
     primary: '#082D05',
     accent: '#8CFF00',
@@ -109,12 +122,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadStaffData = async () => {
     setIsLoadingData(true);
     try {
-      const [config, apiServices, apiSpecialists, gallery, requests] = await Promise.all([
+      const [config, apiServices, apiSpecialists, gallery, requests, apiAppointments] = await Promise.all([
         apiService.getConfig(),
         apiService.getServices(),
         apiService.getSpecialists(),
         apiService.getGallery(),
-        apiService.getBookingRequests()
+        apiService.getBookingRequests(),
+        apiService.getAppointments()
       ]);
 
       if (config && config.id) {
@@ -136,6 +150,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           nailLengths: parseArray(config.nailLengths, DEFAULT_CONFIG.nailLengths),
           nailStyles: parseArray(config.nailStyles, DEFAULT_CONFIG.nailStyles),
           products: parseArray(config.products),
+          content: (() => {
+            try { return { ...DEFAULT_CONFIG.content, ...(typeof config.content === 'string' ? JSON.parse(config.content) : (config.content || {})) }; }
+            catch { return DEFAULT_CONFIG.content; }
+          })(),
           colors: {
             primary: config.primaryColor || DEFAULT_CONFIG.colors.primary,
             accent: config.accentColor || DEFAULT_CONFIG.colors.accent,
@@ -153,6 +171,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setGalleryPhotos(Array.isArray(gallery) ? gallery.map((g: any) => g.photoBase64).filter(Boolean) : []);
       setGalleryIds(Array.isArray(gallery) ? gallery.map((g: any) => g.id) : []);
       setBookingRequests(Array.isArray(requests) ? requests : []);
+      setAppointments(Array.isArray(apiAppointments) ? apiAppointments : []);
     } finally {
       setIsLoadingData(false);
     }
@@ -166,6 +185,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingService, setEditingService] = useState<any | null>(null);
   const [editingSpecialist, setEditingSpecialist] = useState<any | null>(null);
   const [editingConfig, setEditingConfig] = useState<SalonConfig>(DEFAULT_CONFIG);
+  const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
 
   const handlePinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -253,6 +273,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const saveAppointmentEdits = async () => {
+    if (!editingAppointment) return;
+    const saved = await apiService.updateAppointment(editingAppointment.id, {
+      serviceIds: editingAppointment.serviceIds, addonIds: editingAppointment.addonIds, specialistId: editingAppointment.specialistId,
+      date: editingAppointment.date, time: editingAppointment.time, totalPrice: Number(editingAppointment.totalPrice) || 0,
+      totalDuration: Number(editingAppointment.totalDuration) || 0, status: editingAppointment.status, notes: editingAppointment.notes || ''
+    });
+    if (saved?.success) { setAppointments(prev => prev.map(a => a.id === editingAppointment.id ? editingAppointment : a)); setEditingAppointment(null); alert('Cita actualizada correctamente.'); }
+    else alert('No se pudo actualizar la cita.');
+  };
+
   const updateAppointmentStatus = async (id: string, status: 'Confirmada' | 'Completada' | 'Cancelada') => {
     setAppointments(prev => prev.map(a => a.id === id ? { ...a, status } : a));
     await apiService.updateAppointment(id, { status });
@@ -272,16 +303,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return;
     }
     const locator = generateLocator();
+    const serviceMap: Record<string, string> = { gel: 'unas-gel', poligel: 'unas-poligel', 'dibujos-a-mano': 'dibujos-a-mano', decoracion: 'decoración-personalizada', 'decoración-personalizada': 'decoración-personalizada' };
+    const selectedService = services.find(s => s.id === serviceMap[request.serviceType] || s.category === request.serviceType || s.name?.toLowerCase().includes(String(request.serviceType || '').toLowerCase()));
     const newAppointment: Appointment = {
       id: `appt_${Date.now()}`,
       locator,
-      serviceIds: [],
+      serviceIds: selectedService ? [selectedService.id] : [],
       addonIds: [],
       specialistId: 'any',
       date: request.preferredDate,
       time: request.preferredTime,
-      totalPrice: 0,
-      totalDuration: 0,
+      totalPrice: Number(selectedService?.price) || 0,
+      totalDuration: Number(selectedService?.duration) || 0,
       clientName: request.clientName,
       clientPhone: request.clientPhone,
       clientEmail: request.clientEmail,
@@ -295,7 +328,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAppointments(prev => [newAppointment, ...prev]);
       await apiService.updateBookingRequest(request.id, 'Confirmada');
       await reloadBookingRequests();
-      alert(`Cita creada con localizador ${locator}. Recuerda ajustar servicios, especialista y precio en la pestaña Citas.`);
+      alert(`Cita creada con localizador ${locator}. Revisa la cita en Citas para confirmar especialista, servicio y precio.`);
     } else {
       alert('No se pudo crear la cita. Comprueba que la API está en marcha.');
     }
@@ -318,10 +351,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     ? appointments 
     : appointments.filter(a => a.specialistId === selectedTech);
 
-  const totalBilling = appointments
-    .filter(a => a.status !== 'Cancelada')
-    .reduce((acc, a) => acc + a.totalPrice, 0);
-
+  const totalBilling = appointments.filter(a => a.status === 'Completada').reduce((acc, a) => acc + (Number(a.totalPrice) || 0), 0);
+  const pendingBilling = appointments.filter(a => a.status === 'Confirmada').reduce((acc, a) => acc + (Number(a.totalPrice) || 0), 0);
   const completedCount = appointments.filter(a => a.status === 'Completada').length;
 
   if (!isAuthenticated) {
@@ -652,12 +683,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {/* CONTENIDOS */}
         {activeTab === 'contenidos' && (
-          <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
-            <h2 className="font-display text-2xl font-bold text-[#082D05] mb-6">Textos y Contenidos</h2>
-            <p className="text-sm text-neutral-600 mb-6">Próximamente: Edición de textos de página principal, descripciones de servicios, testimonios y más contenido dinámico.</p>
-            <div className="bg-[#F7F8EF] p-6 rounded-xl text-center text-neutral-500">
-              <FileText className="w-12 h-12 mx-auto mb-3 opacity-40" />
-            <p className="text-sm">Módulo en desarrollo...</p>
+          <div className="space-y-6">
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
+              <div className="flex items-start justify-between gap-4 mb-6"><div><h2 className="font-display text-2xl font-bold text-[#082D05]">Contenidos de la página</h2><p className="text-sm text-neutral-600 mt-1">Edita los textos que verá la clienta en la página principal.</p></div><FileText className="w-7 h-7 text-[#43B800] shrink-0" /></div>
+              <div className="space-y-6">
+                {[['heroEyebrow','Etiqueta superior'],['heroTitle','Título principal'],['heroHighlight','Frase destacada'],['heroText','Descripción principal'],['servicesEyebrow','Etiqueta de servicios'],['servicesTitle','Título de servicios'],['servicesIntro','Introducción de servicios'],['galleryEyebrow','Etiqueta de galería'],['galleryTitle','Título de galería'],['galleryIntro','Introducción de galería'],['ctaTitle','Título final'],['ctaText','Texto final'],['instagramHandle','Instagram']].map(([key,label]) => (
+                  <div key={key}><label className="block text-xs font-bold text-[#082D05] mb-2 uppercase">{label}</label>{['heroText','servicesIntro','galleryIntro','ctaText'].includes(key) ? <textarea value={(editingConfig.content as any)[key]} onChange={e => setEditingConfig(prev => ({...prev, content: {...prev.content, [key]: e.target.value}}))} className="w-full px-4 py-3 border border-neutral-300 rounded-xl min-h-20 focus:outline-none focus:ring-2 focus:ring-[#8CFF00]" /> : <input type="text" value={(editingConfig.content as any)[key]} onChange={e => setEditingConfig(prev => ({...prev, content: {...prev.content, [key]: e.target.value}}))} className="w-full px-4 py-3 border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#8CFF00]" />}</div>
+                ))}
+                <div className="pt-4 border-t border-neutral-200 flex justify-end"><button onClick={async () => { const payload = {...editingConfig, primaryColor: editingConfig.colors.primary, accentColor: editingConfig.colors.accent, backgroundColor: editingConfig.colors.background}; const saved = await apiService.updateConfig(payload); if (saved?.success) { setSalonConfig(editingConfig); alert('Contenidos guardados.'); } else alert('No se pudieron guardar los contenidos.'); }} className="px-6 py-3 bg-[#082D05] text-[#F7F8EF] text-xs font-bold uppercase rounded-xl hover:bg-[#176B00] flex items-center gap-2"><Save className="w-4 h-4" /> Guardar Contenidos</button></div>
+              </div>
             </div>
           </div>
         )}
@@ -1000,8 +1034,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <div className="space-y-8">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
               <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
-                <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación Acumulada</span>
-                <span className="font-display text-3xl font-bold text-[#082D05]">{totalBilling}€</span>
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación cobrada</span>
+                <span className="font-display text-3xl font-bold text-[#082D05]">{totalBilling.toFixed(2)}€</span>
+                <span className="text-[11px] text-neutral-500">Solo citas completadas</span>
+              </div>
+              <div className="bg-white p-6 rounded-2xl border border-amber-200 shadow-sm">
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Pendiente de cobro</span>
+                <span className="font-display text-3xl font-bold text-amber-700">{pendingBilling.toFixed(2)}€</span>
+                <span className="text-[11px] text-neutral-500">Citas confirmadas</span>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
                 <span className="text-xs font-semibold text-neutral-500 block mb-1">Citas Totales</span>
@@ -1029,6 +1069,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </button>
               ))}
             </div>
+
+            {editingAppointment && (
+              <div className="bg-white rounded-3xl border border-[#8CFF00]/30 p-6 shadow-sm space-y-5">
+                <div className="flex items-center justify-between gap-4"><div><h3 className="font-display text-xl font-bold text-[#082D05]">Editar cita {editingAppointment.locator}</h3><p className="text-xs text-neutral-500 mt-1">Corrige servicio, especialista, fecha, precio, duración o estado.</p></div><button onClick={() => setEditingAppointment(null)} className="p-2 rounded-lg bg-neutral-100"><X className="w-4 h-4" /></button></div>
+                <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="lg:col-span-2"><label className="block text-xs font-bold mb-2 uppercase">Servicios</label><select multiple value={editingAppointment.serviceIds} onChange={e => setEditingAppointment({...editingAppointment, serviceIds: Array.from(e.target.selectedOptions).map(o => o.value)})} className="w-full min-h-24 px-3 py-2 border rounded-xl text-xs">{services.map(s => <option key={s.id} value={s.id}>{s.name} · {s.price ?? 0}€</option>)}</select></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Especialista</label><select value={editingAppointment.specialistId} onChange={e => setEditingAppointment({...editingAppointment, specialistId: e.target.value})} className="w-full px-3 py-3 border rounded-xl text-xs">{specialists.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Estado</label><select value={editingAppointment.status} onChange={e => setEditingAppointment({...editingAppointment, status: e.target.value as Appointment['status']})} className="w-full px-3 py-3 border rounded-xl text-xs"><option>Confirmada</option><option>Completada</option><option>Cancelada</option></select></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Fecha</label><input type="date" value={editingAppointment.date} onChange={e => setEditingAppointment({...editingAppointment, date:e.target.value})} className="w-full px-3 py-3 border rounded-xl text-xs" /></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Hora</label><input type="time" value={editingAppointment.time} onChange={e => setEditingAppointment({...editingAppointment, time:e.target.value})} className="w-full px-3 py-3 border rounded-xl text-xs" /></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Precio / total (€)</label><input type="number" min="0" step="0.01" value={editingAppointment.totalPrice} onChange={e => setEditingAppointment({...editingAppointment, totalPrice:Number(e.target.value)})} className="w-full px-3 py-3 border rounded-xl text-xs" /></div>
+                  <div><label className="block text-xs font-bold mb-2 uppercase">Duración (min)</label><input type="number" min="0" value={editingAppointment.totalDuration} onChange={e => setEditingAppointment({...editingAppointment, totalDuration:Number(e.target.value)})} className="w-full px-3 py-3 border rounded-xl text-xs" /></div>
+                </div>
+                <div><label className="block text-xs font-bold mb-2 uppercase">Notas</label><textarea value={editingAppointment.notes || ''} onChange={e => setEditingAppointment({...editingAppointment, notes:e.target.value})} className="w-full px-3 py-3 border rounded-xl text-xs min-h-20" /></div>
+                <div className="flex justify-end gap-2"><button onClick={() => setEditingAppointment(null)} className="px-4 py-2 bg-neutral-200 rounded-xl text-xs font-bold">Cancelar</button><button onClick={saveAppointmentEdits} className="px-5 py-2 bg-[#082D05] text-[#F7F8EF] rounded-xl text-xs font-bold flex items-center gap-2"><Save className="w-4 h-4" /> Guardar cambios</button></div>
+              </div>
+            )}
 
             <div className="bg-white rounded-3xl border border-[#8CFF00]/25 shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
@@ -1077,7 +1134,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 {appt.status}
                               </span>
                             </td>
-                            <td className="p-4 text-right space-x-2">
+                            <td className="p-4 text-right space-x-2 whitespace-nowrap">
+                              <button onClick={() => setEditingAppointment({...appt})} className="px-2.5 py-1 bg-neutral-100 text-[#082D05] rounded text-[11px] font-semibold hover:bg-neutral-200">Editar</button>
                               {appt.status !== 'Completada' && (
                                 <button
                                   onClick={() => updateAppointmentStatus(appt.id, 'Completada')}
