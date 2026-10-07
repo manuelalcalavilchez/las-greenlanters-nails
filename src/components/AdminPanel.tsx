@@ -1032,7 +1032,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* AGENDA - Lo que ya existía */}
         {activeTab === 'agenda' && (
           <div className="space-y-8">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
                 <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación cobrada</span>
                 <span className="font-display text-3xl font-bold text-[#082D05]">{totalBilling.toFixed(2)}€</span>
