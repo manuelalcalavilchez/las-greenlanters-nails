@@ -434,17 +434,33 @@ const n8nApiGuard = (req, res, next) => {
 const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
 const serializeAppointment = (a) => ({ ...a, serviceIds: JSON.parse(a.serviceIds || '[]'), addonIds: JSON.parse(a.addonIds || '[]') });
 
+// Propiedad: si n8n envia phone (query o body), debe coincidir con el telefono de la cita.
+const n8nOwns = (appointment, req) => {
+  const phone = normalizePhone((req.query && req.query.phone) || (req.body && req.body.phone));
+  if (!phone) return true;
+  return normalizePhone(appointment.clientPhone) === phone;
+};
+const madridNow = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Madrid', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date());
+  const g = (t) => parts.find(p => p.type === t).value;
+  return { date: g('year') + '-' + g('month') + '-' + g('day'), minutes: Number(g('hour')) * 60 + Number(g('minute')) };
+};
+const toMinutes = (hhmm) => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '')); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+const toHHMM = (min) => String(Math.floor(min / 60)).padStart(2, '0') + ':' + String(min % 60).padStart(2, '0');
+const isPastAppointment = (a) => { const now = madridNow(); const start = toMinutes(a.time); if (a.date < now.date) return true; if (a.date > now.date) return false; return start !== null && start <= now.minutes; };
+
+
 app.get('/api/integrations/n8n/health', n8nApiGuard, (req, res) => {
   res.json({ success: true, service: 'las-greenlanters-n8n', version: 1, verifactu: 'not-active' });
 });
 
 app.get('/api/integrations/n8n/appointments/:id', n8nApiGuard, async (req, res) => {
-  try { const appointment = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
+  try { const appointment = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]); if (!appointment || !n8nOwns(appointment, req)) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/integrations/n8n/appointments/by-locator/:locator', n8nApiGuard, async (req, res) => {
-  try { const appointment = await dbGet('SELECT * FROM appointments WHERE locator = ?', [req.params.locator]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
+  try { const appointment = await dbGet('SELECT * FROM appointments WHERE locator = ?', [req.params.locator]); if (!appointment || !n8nOwns(appointment, req)) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -456,7 +472,8 @@ app.get('/api/integrations/n8n/appointments/by-phone/:phone', n8nApiGuard, async
 const n8nSetStatus = async (req, res, targetStatus) => {
   try {
     const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
-    if (!current) return res.status(404).json({ error: 'Cita no encontrada' });
+    if (!current || !n8nOwns(current, req)) return res.status(404).json({ error: 'Cita no encontrada' });
+    if (targetStatus === 'Completada' && !isPastAppointment(current)) return res.status(409).json({ error: 'No se puede completar una cita futura' });
     if (targetStatus === 'Confirmada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede volver a Confirmada' });
     if (targetStatus === 'Cancelada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede cancelarse mediante esta accion' });
     if (targetStatus === 'Completada' && current.status === 'Cancelada') return res.status(409).json({ error: 'Una cita cancelada no puede completarse' });
@@ -472,6 +489,131 @@ const n8nSetStatus = async (req, res, targetStatus) => {
 app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
 app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
 app.post('/api/integrations/n8n/appointments/:id/complete', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Completada'));
+
+// ---- Catalogo, disponibilidad y reserva para el agente de WhatsApp ----
+const SLOT_MINUTES = Number(process.env.SLOT_MINUTES || 30);
+const MIN_LEAD_MINUTES = Number(process.env.N8N_MIN_LEAD_MINUTES || 60);
+const MAX_DAYS_AHEAD = Number(process.env.N8N_MAX_DAYS_AHEAD || 90);
+const MAX_ACTIVE_PER_PHONE = Number(process.env.N8N_MAX_ACTIVE_APPOINTMENTS_PER_PHONE || 3);
+const DAY_KEYS = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+const stripAccents = (v) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+const parseJson = (v, fallback) => { try { const x = typeof v === 'string' ? JSON.parse(v) : v; return x ?? fallback; } catch { return fallback; } };
+const isDateStr = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(v + 'T12:00:00Z'));
+
+const loadServices = async (ids) => {
+  const unique = [...new Set((ids || []).map(String))];
+  if (!unique.length) return { error: 'Falta al menos un servicio' };
+  const rows = await dbAll('SELECT * FROM services WHERE active = 1');
+  const found = unique.map(id => rows.find(r => r.id === id));
+  if (found.some(x => !x)) return { error: 'Algun servicio no existe o no esta activo' };
+  return { services: found, totalDuration: found.reduce((n, x) => n + (Number(x.duration) || 0), 0), totalPrice: found.reduce((n, x) => n + (Number(x.price) || 0), 0) };
+};
+
+const computeSlots = async ({ date, duration, specialistId }) => {
+  const cfg = await dbGet("SELECT workingHours, blockedSlots, vacations FROM salón_config WHERE id = 'main'");
+  const working = parseJson(cfg && cfg.workingHours, []);
+  const blocked = parseJson(cfg && cfg.blockedSlots, []);
+  const vacations = parseJson(cfg && cfg.vacations, []);
+  if (vacations.includes(date)) return [];
+  const dayKey = DAY_KEYS[new Date(date + 'T12:00:00Z').getUTCDay()];
+  const hours = working.find(h => stripAccents(h.day) === dayKey && h.enabled !== false);
+  if (!hours) return [];
+  const open = toMinutes(hours.open); const close = toMinutes(hours.close);
+  if (open === null || close === null) return [];
+  const blockedIntervals = [];
+  for (const b of blocked) {
+    const txt = String(b).trim();
+    if (txt === date) return [];
+    const m = /^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})$/.exec(txt);
+    if (m && m[1] === date) blockedIntervals.push([toMinutes(m[2]), toMinutes(m[3])]);
+  }
+  let specialists = (await dbAll('SELECT id, name FROM specialists WHERE active = 1')).filter(s => s.id !== 'any');
+  if (specialistId) specialists = specialists.filter(s => s.id === specialistId);
+  if (!specialists.length) return [];
+  const booked = (await dbAll("SELECT specialistId, time, totalDuration FROM appointments WHERE date = ? AND status != 'Cancelada'", [date]))
+    .map(a => ({ specialistId: a.specialistId, start: toMinutes(a.time), end: toMinutes(a.time) + (Number(a.totalDuration) || SLOT_MINUTES) }))
+    .filter(a => a.start !== null);
+  const now = madridNow();
+  const overlaps = (s1, e1, s2, e2) => s1 < e2 && s2 < e1;
+  const slots = [];
+  for (let t = open; t + duration <= close; t += SLOT_MINUTES) {
+    if (date === now.date && t < now.minutes + MIN_LEAD_MINUTES) continue;
+    if (blockedIntervals.some(([bs, be]) => overlaps(t, t + duration, bs, be))) continue;
+    const clash = booked.filter(a => overlaps(t, t + duration, a.start, a.end));
+    const taken = new Set(clash.filter(a => specialists.some(sp => sp.id === a.specialistId)).map(a => a.specialistId));
+    const unassigned = specialistId ? 0 : clash.filter(a => !specialists.some(sp => sp.id === a.specialistId)).length;
+    const free = specialists.filter(sp => !taken.has(sp.id));
+    if (free.length - unassigned > 0) slots.push({ time: toHHMM(t), specialistIds: free.map(f => f.id) });
+  }
+  return slots;
+};
+
+app.get('/api/integrations/n8n/catalog', n8nApiGuard, async (req, res) => {
+  try {
+    const services = (await dbAll('SELECT * FROM services WHERE active = 1 ORDER BY sortOrder ASC, name ASC')).map(s => ({ id: s.id, name: s.name, category: s.category || '', shortDescription: s.shortDescription || s.description || '', durationMinutes: Number(s.duration) || 0, price: Number(s.price) || 0 }));
+    const specialists = (await dbAll('SELECT id, name, role FROM specialists WHERE active = 1')).filter(s => s.id !== 'any').map(s => ({ id: s.id, name: s.name, role: s.role || '' }));
+    const cfg = await dbGet("SELECT name, address, hours, workingHours FROM salón_config WHERE id = 'main'");
+    res.json({ success: true, salon: cfg ? { name: cfg.name, address: cfg.address, hours: cfg.hours, workingHours: parseJson(cfg.workingHours, []) } : null, currency: 'EUR', services, specialists });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/integrations/n8n/availability', n8nApiGuard, async (req, res) => {
+  try {
+    const date = String(req.query.date || '');
+    if (!isDateStr(date)) return res.status(400).json({ error: 'date debe tener formato YYYY-MM-DD' });
+    const now = madridNow();
+    if (date < now.date) return res.status(400).json({ error: 'La fecha ya ha pasado' });
+    if ((Date.parse(date + 'T12:00:00Z') - Date.parse(now.date + 'T12:00:00Z')) / 86400000 > MAX_DAYS_AHEAD) return res.status(400).json({ error: 'Solo se puede reservar con ' + MAX_DAYS_AHEAD + ' dias de antelacion como maximo' });
+    const ids = String(req.query.serviceIds || '').split(',').map(x => x.trim()).filter(Boolean);
+    const svc = await loadServices(ids);
+    if (svc.error) return res.status(400).json({ error: svc.error });
+    const slots = await computeSlots({ date, duration: svc.totalDuration, specialistId: req.query.specialistId ? String(req.query.specialistId) : null });
+    res.json({ success: true, date, totalDurationMinutes: svc.totalDuration, totalPrice: svc.totalPrice, count: slots.length, slots });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+let n8nBookingQueue = Promise.resolve();
+const withBookingLock = (fn) => { const run = n8nBookingQueue.then(fn, fn); n8nBookingQueue = run.catch(() => {}); return run; };
+
+app.post('/api/integrations/n8n/appointments', n8nApiGuard, async (req, res) => {
+  try {
+    const out = await withBookingLock(async () => {
+      const b = req.body || {};
+      const clientName = String(b.clientName || '').trim().slice(0, 100);
+      const phone = normalizePhone(b.clientPhone);
+      const clientEmail = String(b.clientEmail || '').trim().slice(0, 150);
+      const date = String(b.date || ''); const time = String(b.time || '');
+      if (!clientName) return { status: 400, body: { error: 'Falta el nombre de la clienta' } };
+      if (phone.length < 9 || phone.length > 15) return { status: 400, body: { error: 'Telefono no valido' } };
+      if (!isDateStr(date) || toMinutes(time) === null) return { status: 400, body: { error: 'Fecha u hora no validas' } };
+      const svc = await loadServices(Array.isArray(b.serviceIds) ? b.serviceIds : []);
+      if (svc.error) return { status: 400, body: { error: svc.error } };
+      const now = madridNow();
+      if (date < now.date) return { status: 400, body: { error: 'La fecha ya ha pasado' } };
+      if ((Date.parse(date + 'T12:00:00Z') - Date.parse(now.date + 'T12:00:00Z')) / 86400000 > MAX_DAYS_AHEAD) return { status: 400, body: { error: 'Fecha demasiado lejana' } };
+      const all = await dbAll("SELECT * FROM appointments WHERE status IN ('Confirmada','Pendiente')");
+      const mine = all.filter(a => normalizePhone(a.clientPhone) === phone);
+      const same = mine.find(a => a.date === date && a.time === toHHMM(toMinutes(time)));
+      if (same) return { status: 200, body: { success: true, alreadyExists: true, appointment: serializeAppointment(same) } };
+      if (mine.filter(a => a.date >= now.date).length >= MAX_ACTIVE_PER_PHONE) return { status: 429, body: { error: 'Esta clienta ya tiene el maximo de citas activas', code: 'TOO_MANY_ACTIVE_APPOINTMENTS' } };
+      const slots = await computeSlots({ date, duration: svc.totalDuration, specialistId: b.specialistId ? String(b.specialistId) : null });
+      const slot = slots.find(s => s.time === toHHMM(toMinutes(time)));
+      if (!slot) return { status: 409, body: { error: 'Ese hueco ya no esta disponible', code: 'SLOT_UNAVAILABLE', alternatives: slots.slice(0, 6).map(s => s.time) } };
+      const specialistId = b.specialistId ? String(b.specialistId) : slot.specialistIds[0];
+      let locator = ''; for (let i = 0; i < 20; i++) { const c = 'LGN-' + Math.floor(1000 + Math.random() * 9000); if (!(await dbGet('SELECT id FROM appointments WHERE locator = ?', [c]))) { locator = c; break; } }
+      if (!locator) return { status: 500, body: { error: 'No se pudo generar el localizador' } };
+      const id = 'appt_' + Date.now() + '_' + crypto.randomBytes(3).toString('hex');
+      const ts = new Date().toISOString();
+      const notes = String(b.notes || '').trim().slice(0, 500);
+      await dbRun('INSERT INTO appointments (id, locator, serviceIds, addonIds, specialistId, date, time, totalPrice, totalDuration, clientName, clientPhone, clientEmail, status, notes, createdAt, updatedAt, lastActionSource, lastActionAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        [id, locator, JSON.stringify(svc.services.map(x => x.id)), '[]', specialistId, date, toHHMM(toMinutes(time)), svc.totalPrice, svc.totalDuration, clientName, phone, clientEmail, 'Confirmada', notes, ts, ts, 'n8n', ts]);
+      const created = await dbGet('SELECT * FROM appointments WHERE id = ?', [id]);
+      if (clientEmail) sendEmail({ to: clientEmail, subject: 'Tu cita esta confirmada - PIN ' + locator + ' - Las Greenlanters Nails', templateName: 'booking-confirmed.html', vars: { clientName, locator, date, time: created.time, totalPrice: svc.totalPrice } });
+      return { status: 201, body: { success: true, appointment: serializeAppointment(created) } };
+    });
+    res.status(out.status).json(out.body);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 // DISEOS
 app.get('/api/designs', async (req, res) => {
   try {
