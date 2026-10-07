@@ -427,11 +427,16 @@ app.delete('/api/appointments/:id', async (req, res) => {
 // Rutas limitadas para que n8n consulte y ejecute acciones de negocio.
 const n8nApiGuard = (req, res, next) => {
   const expected = process.env.N8N_API_KEY;
-  if (expected && req.get('X-API-Key') !== expected) return res.status(401).json({ error: 'API key de n8n no valida' });
+  if (!expected) return res.status(503).json({ error: 'N8N_API_KEY no configurada en el servidor' });
+  if (req.get('X-API-Key') !== expected) return res.status(401).json({ error: 'API key de n8n no valida' });
   next();
 };
 const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
 const serializeAppointment = (a) => ({ ...a, serviceIds: JSON.parse(a.serviceIds || '[]'), addonIds: JSON.parse(a.addonIds || '[]') });
+
+app.get('/api/integrations/n8n/health', n8nApiGuard, (req, res) => {
+  res.json({ success: true, service: 'las-greenlanters-n8n', version: 1, verifactu: 'not-active' });
+});
 
 app.get('/api/integrations/n8n/appointments/:id', n8nApiGuard, async (req, res) => {
   try { const appointment = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
