@@ -1032,16 +1032,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* AGENDA - Lo que ya existía */}
         {activeTab === 'agenda' && (
           <div className="space-y-8">
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-xs text-amber-900"><strong>Control interno:</strong> estos importes sirven para controlar citas e ingresos previstos. Esta pantalla no sustituye una factura fiscal ni un sistema VERI*FACTU.</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
-                <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación cobrada</span>
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Facturación de citas completadas</span>
                 <span className="font-display text-3xl font-bold text-[#082D05]">{totalBilling.toFixed(2)}€</span>
-                <span className="text-[11px] text-neutral-500">Solo citas completadas</span>
+                <span className="text-[11px] text-neutral-500">Total de citas marcadas como completadas</span>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-amber-200 shadow-sm">
-                <span className="text-xs font-semibold text-neutral-500 block mb-1">Pendiente de cobro</span>
+                <span className="text-xs font-semibold text-neutral-500 block mb-1">Importe de citas confirmadas</span>
                 <span className="font-display text-3xl font-bold text-amber-700">{pendingBilling.toFixed(2)}€</span>
-                <span className="text-[11px] text-neutral-500">Citas confirmadas</span>
+                <span className="text-[11px] text-neutral-500">Citas aún no completadas</span>
               </div>
               <div className="bg-white p-6 rounded-2xl border border-[#8CFF00]/30 shadow-sm">
                 <span className="text-xs font-semibold text-neutral-500 block mb-1">Citas Totales</span>
