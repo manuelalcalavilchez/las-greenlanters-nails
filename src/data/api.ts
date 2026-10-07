@@ -53,6 +53,13 @@ export const apiService = {
     }
   },
 
+  // FACTURACIÓN
+  async getInvoices() { try { const res = await fetch(API_BASE + '/invoices'); return res.json(); } catch (err) { return []; } },
+  async createInvoiceDraftFromAppointment(appointmentId: string) { try { const res = await fetch(API_BASE + '/invoices/draft-from-appointment/' + appointmentId, { method: 'POST' }); return res.json(); } catch (err) { return { error: err }; } },
+  async updateInvoice(id: string, data: any) { try { const res = await fetch(API_BASE + '/invoices/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); return res.json(); } catch (err) { return { error: err }; } },
+  async issueInvoice(id: string) { try { const res = await fetch(API_BASE + '/invoices/' + id + '/issue', { method: 'POST' }); return res.json(); } catch (err) { return { error: err }; } },
+  async cancelInvoice(id: string) { try { const res = await fetch(API_BASE + '/invoices/' + id + '/cancel', { method: 'POST' }); return res.json(); } catch (err) { return { error: err }; } },
+
   // DISEÑOS
   async getDesigns() {
     try {
