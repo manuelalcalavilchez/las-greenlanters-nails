@@ -174,6 +174,7 @@ const initDatabase = async () => {
         nailLengths TEXT,
         nailStyles TEXT,
         products TEXT,
+        content TEXT,
         updatedAt TEXT
       )
     `);
@@ -188,6 +189,7 @@ const initDatabase = async () => {
     await ensureColumn('salón_config', 'nailLengths', 'TEXT');
     await ensureColumn('salón_config', 'nailStyles', 'TEXT');
     await ensureColumn('salón_config', 'products', 'TEXT');
+    await ensureColumn('salón_config', 'content', 'TEXT');
 
     // Tabla de servicios
     await dbRun(`
@@ -308,6 +310,13 @@ const initDatabase = async () => {
       );
     }
 
+    await dbRun(`UPDATE salón_config SET content = ? WHERE id = 'main' AND (content IS NULL OR content = '')`, [JSON.stringify({
+      heroEyebrow: 'Las Greenlanters Nails · Almería', heroTitle: 'Tus manos hablan por ti.', heroHighlight: 'Haz que destaquen.',
+      heroText: 'Manicurista · Técnica en uñas gel y poligel · Dibujos a mano · Decoración.',
+      servicesEyebrow: 'Servicios', servicesTitle: 'Técnicas y decoración', servicesIntro: 'Trabajos personalizados pensados para ti.',
+      galleryEyebrow: 'Galería', galleryTitle: 'Trabajos reales', galleryIntro: 'Una selección de nuestros trabajos.',
+      ctaTitle: 'Nail art con personalidad.', ctaText: 'Almería · @greenlanters.nails', instagramHandle: '@greenlanters.nails'
+    })]);
     console.log('Base de datos inicializada correctamente');
   } catch (err) {
     console.error('Error inicializando BD:', err);
@@ -356,11 +365,19 @@ app.post('/api/appointments', async (req, res) => {
 
 app.put('/api/appointments/:id', async (req, res) => {
   try {
-    const { status, notes } = req.body;
-    
+    const { status, notes, serviceIds, addonIds, specialistId, date, time, totalPrice, totalDuration } = req.body;
+    const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
+    if (!current) return res.status(404).json({ error: 'Cita no encontrada' });
+    const nextStatus = status ?? current.status;
+    const nextNotes = notes ?? current.notes ?? '';
+    const nextServiceIds = Array.isArray(serviceIds) ? JSON.stringify(serviceIds) : current.serviceIds;
+    const nextAddonIds = Array.isArray(addonIds) ? JSON.stringify(addonIds) : current.addonIds;
     await dbRun(
-      'UPDATE appointments SET status = ?, notes = ?, updatedAt = ? WHERE id = ?',
-      [status, notes || '', new Date().toISOString(), req.params.id]
+      `UPDATE appointments SET status = ?, notes = ?, serviceIds = ?, addonIds = ?, specialistId = ?, date = ?, time = ?, totalPrice = ?, totalDuration = ?, updatedAt = ? WHERE id = ?`,
+      [nextStatus, nextNotes, nextServiceIds, nextAddonIds, specialistId ?? current.specialistId, date ?? current.date, time ?? current.time,
+       totalPrice === undefined ? current.totalPrice : Number(totalPrice) || 0,
+       totalDuration === undefined ? current.totalDuration : Number(totalDuration) || 0,
+       new Date().toISOString(), req.params.id]
     );
 
     if (status === 'Cancelada') {
@@ -457,7 +474,7 @@ app.put('/api/config', async (req, res) => {
       name, description, phone, email, address, hours, logo, coverPhoto,
       primaryColor, accentColor, backgroundColor, whatsapp, calendarPublic,
       workingHours, blockedSlots, vacations, nailShapes, nailLengths,
-      nailStyles, products
+      nailStyles, products, content
     } = req.body;
 
     const existing = await dbGet('SELECT id FROM salón_config WHERE id = ?', ['main']);
@@ -472,6 +489,7 @@ app.put('/api/config', async (req, res) => {
       JSON.stringify(nailLengths ?? []),
       JSON.stringify(nailStyles ?? []),
       JSON.stringify(products ?? []),
+      typeof content === 'string' ? content : JSON.stringify(content ?? {}),
       new Date().toISOString()
     ];
 
@@ -481,7 +499,7 @@ app.put('/api/config', async (req, res) => {
          SET name = ?, description = ?, phone = ?, email = ?, address = ?, hours = ?,
              logo = ?, coverPhoto = ?, primaryColor = ?, accentColor = ?, backgroundColor = ?,
              whatsapp = ?, calendarPublic = ?, workingHours = ?, blockedSlots = ?, vacations = ?,
-             nailShapes = ?, nailLengths = ?, nailStyles = ?, products = ?, updatedAt = ?
+             nailShapes = ?, nailLengths = ?, nailStyles = ?, products = ?, content = ?, updatedAt = ?
          WHERE id = ?`,
         [...values, 'main']
       );
