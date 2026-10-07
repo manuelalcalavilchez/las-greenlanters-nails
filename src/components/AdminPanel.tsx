@@ -1,10 +1,63 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Users, Palette, CheckCircle2, Clock, XCircle, Phone, Sparkles, Filter, Plus, Eye, BookmarkPlus, Lock, LogOut, Settings, Image, FileText, Trash2, Edit2, Save, X } from 'lucide-react';
+import { Calendar, Users, Palette, CheckCircle2, Clock, XCircle, Phone, Sparkles, Filter, Plus, Eye, BookmarkPlus, Lock, LogOut, Settings, Image, FileText, Trash2, Edit2, Save, X, RotateCcw } from 'lucide-react';
 import { Appointment, CustomDesign, NailCatalogStyle } from '../types';
-import { apiService } from '../data/api';
+import { apiService, staffSession, STAFF_UNAUTHORIZED_EVENT } from '../data/api';
 
-// This is only a client-side local gate, not real authentication. Use server-side auth before public deployment of Staff.
-const STAFF_PIN = import.meta.env.VITE_STAFF_PIN || '';
+// La autenticación Staff se valida en el servidor (POST /api/staff/login). Aquí solo se guarda el token de sesión.
+
+// Campos editables en Staff > Contenidos (las claves coinciden con SITE_CONTENT_DEFAULTS en server.js)
+const CONTENT_SECTIONS: Array<{ title: string; description: string; fields: Array<{ key: string; label: string; multiline?: boolean }> }> = [
+  {
+    title: 'Portada',
+    description: 'Cabecera principal de la página de inicio.',
+    fields: [
+      { key: 'hero_kicker', label: 'Antetítulo' },
+      { key: 'hero_title', label: 'Titular' },
+      { key: 'hero_title_highlight', label: 'Titular destacado (en verde)' },
+      { key: 'hero_subtitle', label: 'Subtítulo', multiline: true },
+      { key: 'hero_cta_booking', label: 'Botón de cita' },
+      { key: 'hero_cta_instagram', label: 'Botón de Instagram' }
+    ]
+  },
+  {
+    title: 'Servicios',
+    description: 'Encabezado del bloque de servicios (las fichas se editan en la pestaña Servicios).',
+    fields: [
+      { key: 'services_kicker', label: 'Antetítulo' },
+      { key: 'services_title', label: 'Título' },
+      { key: 'services_intro', label: 'Texto introductorio', multiline: true },
+      { key: 'services_empty', label: 'Mensaje sin servicios' }
+    ]
+  },
+  {
+    title: 'Galería',
+    description: 'Encabezado del bloque de galería (las fotos se gestionan en la pestaña Galería).',
+    fields: [
+      { key: 'gallery_kicker', label: 'Antetítulo' },
+      { key: 'gallery_title', label: 'Título' },
+      { key: 'gallery_cta', label: 'Enlace al Atelier' },
+      { key: 'gallery_empty_title', label: 'Título sin fotos' },
+      { key: 'gallery_empty_text', label: 'Texto sin fotos', multiline: true }
+    ]
+  },
+  {
+    title: 'Cierre',
+    description: 'Bloque final de la página de inicio.',
+    fields: [
+      { key: 'closing_title', label: 'Título' },
+      { key: 'closing_subtitle', label: 'Subtítulo' },
+      { key: 'closing_cta_booking', label: 'Botón de cita' }
+    ]
+  },
+  {
+    title: 'Redes sociales',
+    description: 'Enlaces a Instagram usados en la portada.',
+    fields: [
+      { key: 'instagram_handle', label: 'Usuario de Instagram' },
+      { key: 'instagram_url', label: 'URL de Instagram (https://…)' }
+    ]
+  }
+];
 
 interface SalonConfig {
   name: string;
@@ -85,9 +138,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setCatalogStyles,
   onAddToCatalog
 }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('greenlanters_staff_auth') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => Boolean(staffSession.getToken()));
   const [pinInput, setPinInput] = useState<string>('');
-  const [pinError, setPinError] = useState<boolean>(false);
+  const [pinError, setPinError] = useState<string>('');
+  const [pinLoading, setPinLoading] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests'>('config');
   const [selectedTech, setSelectedTech] = useState<string>('all');
   const [selectedDesignModal, setSelectedDesignModal] = useState<CustomDesign | null>(null);
@@ -105,6 +159,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [confirmAddons, setConfirmAddons] = useState<string[]>([]);
   const [confirmSpecialist, setConfirmSpecialist] = useState<string>("any");
 
+  // Contenidos de la web
+  const [siteContent, setSiteContent] = useState<Record<string, string>>({});
+  const [savedContent, setSavedContent] = useState<Record<string, string>>({});
+  const [contentDefaults, setContentDefaults] = useState<Record<string, string>>({});
+  const [contentUpdatedAt, setContentUpdatedAt] = useState<string | null>(null);
+  const [contentSaving, setContentSaving] = useState<boolean>(false);
+  const [contentMessage, setContentMessage] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+
+  const applyContentResponse = (data: { content?: Record<string, string>; defaults?: Record<string, string>; updatedAt?: string | null } | null) => {
+    if (!data?.content) return;
+    setSiteContent(data.content);
+    setSavedContent(data.content);
+    setContentDefaults(data.defaults || {});
+    setContentUpdatedAt(data.updatedAt ?? null);
+  };
+
+  const contentDirty = Object.keys(siteContent).some(key => (siteContent[key] ?? '') !== (savedContent[key] ?? ''));
+
+  const saveSiteContent = async () => {
+    setContentSaving(true);
+    setContentMessage(null);
+    const result: any = await apiService.updateContent(siteContent);
+    setContentSaving(false);
+    if (result?.success) {
+      applyContentResponse(result);
+      setContentMessage({ type: 'ok', text: 'Contenidos guardados. Ya se muestran en la web.' });
+    } else {
+      setContentMessage({ type: 'error', text: result?.error || 'No se pudieron guardar los contenidos.' });
+    }
+  };
+
   const reloadBookingRequests = async () => {
     const data = await apiService.getBookingRequests();
     setBookingRequests(Array.isArray(data) ? data : []);
@@ -113,13 +198,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const reloadStaffData = async () => {
     setIsLoadingData(true);
     try {
-      const [config, apiServices, apiSpecialists, gallery, requests] = await Promise.all([
+      const [config, apiServices, apiSpecialists, gallery, requests, apiAppointments, apiDesigns, content] = await Promise.all([
         apiService.getConfig(),
         apiService.getServices(),
         apiService.getSpecialists(),
         apiService.getGallery(),
-        apiService.getBookingRequests()
+        apiService.getBookingRequests(),
+        apiService.getAppointments(),
+        apiService.getDesigns(),
+        apiService.getContent()
       ]);
+
+      // Citas y diseños son datos privados: solo se obtienen con sesión Staff válida
+      setAppointments(Array.isArray(apiAppointments) ? apiAppointments : []);
+      setCustomDesigns(Array.isArray(apiDesigns) ? apiDesigns : []);
+      applyContentResponse(content);
 
       if (config && config.id) {
         const parseArray = (value: unknown, fallback: any[] = []) => {
@@ -162,8 +255,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  // Verifica la sesión contra el servidor antes de cargar datos privados
   useEffect(() => {
-    reloadStaffData();
+    if (!isAuthenticated) return;
+    let cancelled = false;
+    apiService.staffCheckSession().then(valid => {
+      if (cancelled) return;
+      if (valid) reloadStaffData();
+      else setIsAuthenticated(false);
+    });
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  // Si el servidor rechaza el token (caducado/revocado), se vuelve a pedir el PIN
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setIsAuthenticated(false);
+      setPinError('La sesión ha caducado. Vuelve a introducir el PIN.');
+    };
+    window.addEventListener(STAFF_UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => window.removeEventListener(STAFF_UNAUTHORIZED_EVENT, onUnauthorized);
   }, []);
 
   // Edit states
@@ -171,21 +282,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingSpecialist, setEditingSpecialist] = useState<any | null>(null);
   const [editingConfig, setEditingConfig] = useState<SalonConfig>(DEFAULT_CONFIG);
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput === STAFF_PIN) {
-      sessionStorage.setItem('greenlanters_staff_auth', 'true');
+    if (!pinInput || pinLoading) return;
+    setPinLoading(true);
+    const result = await apiService.staffLogin(pinInput);
+    setPinLoading(false);
+    setPinInput('');
+    if (result.success) {
+      setPinError('');
       setIsAuthenticated(true);
-      setPinError(false);
     } else {
-      setPinError(true);
-      setPinInput('');
+      const suffix = result.retryAfter
+        ? ` Espera ${Math.ceil(result.retryAfter / 60)} min.`
+        : typeof result.remaining === 'number' ? ` Intentos restantes: ${result.remaining}.` : '';
+      setPinError(`${result.error || 'PIN incorrecto.'}${suffix}`);
     }
   };
 
-  const handleLogout = () => {
-    sessionStorage.removeItem('greenlanters_staff_auth');
+  const handleLogout = async () => {
+    await apiService.staffLogout();
     setIsAuthenticated(false);
+    // No dejar datos privados en memoria tras cerrar sesión
+    setAppointments([]);
+    setCustomDesigns([]);
+    setBookingRequests([]);
   };
 
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -365,17 +486,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               inputMode="numeric"
               autoFocus
               value={pinInput}
-              onChange={(e) => { setPinInput(e.target.value); setPinError(false); }}
+              onChange={(e) => { setPinInput(e.target.value); setPinError(''); }}
               placeholder="? ? ? ?"
               className={`w-full text-center tracking-[0.5em] text-lg px-4 py-3 rounded-xl border text-[#082D05] focus:outline-none focus:ring-2 focus:ring-[#8CFF00] ${pinError ? 'border-rose-400' : 'border-neutral-300'}`}
             />
-            {pinError && <p className="text-xs text-rose-500 font-semibold mt-2">PIN incorrecto.</p>}
+            {pinError && <p className="text-xs text-rose-500 font-semibold mt-2">{pinError}</p>}
           </div>
           <button
             type="submit"
-            className="w-full py-3.5 bg-[#082D05] hover:bg-[#176B00] text-[#F7F8EF] text-xs font-bold uppercase tracking-widest rounded-xl transition-all"
+            disabled={pinLoading || !pinInput}
+            className="w-full py-3.5 bg-[#082D05] hover:bg-[#176B00] disabled:opacity-60 disabled:cursor-not-allowed text-[#F7F8EF] text-xs font-bold uppercase tracking-widest rounded-xl transition-all"
           >
-            Acceder
+            {pinLoading ? 'Comprobando…' : 'Acceder'}
           </button>
         </form>
       </div>
@@ -675,13 +797,139 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
         {/* CONTENIDOS */}
         {activeTab === 'contenidos' && (
-          <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8">
-            <h2 className="font-display text-2xl font-bold text-[#082D05] mb-6">Textos y Contenidos</h2>
-            <p className="text-sm text-neutral-600 mb-6">Próximamente: Edición de textos de página principal, descripciones de servicios, testimonios y más contenido dinámico.</p>
-            <div className="bg-[#F7F8EF] p-6 rounded-xl text-center text-neutral-500">
-              <FileText className="w-12 h-12 mx-auto mb-3 opacity-40" />
-            <p className="text-sm">Módulo en desarrollo...</p>
+          <div className="space-y-6">
+            <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-6 sm:p-8">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-display text-2xl font-bold text-[#082D05]">Textos y Contenidos</h2>
+                  <p className="text-sm text-neutral-600 mt-1">Edita los textos de la página de inicio. Un campo vacío vuelve al texto por defecto.</p>
+                  {contentUpdatedAt && (
+                    <p className="text-xs text-neutral-400 mt-2">Última modificación: {new Date(contentUpdatedAt).toLocaleString('es-ES')}</p>
+                  )}
+                </div>
+                <div className="flex gap-2 shrink-0">
+                  <button
+                    type="button"
+                    disabled={!contentDirty || contentSaving}
+                    onClick={() => { setSiteContent(savedContent); setContentMessage(null); }}
+                    className="px-4 py-3 border border-neutral-300 text-[#082D05] text-xs font-bold uppercase rounded-xl hover:bg-[#F7F8EF] disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Descartar</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!contentDirty || contentSaving}
+                    onClick={saveSiteContent}
+                    className="px-5 py-3 bg-[#082D05] text-[#F7F8EF] text-xs font-bold uppercase rounded-xl hover:bg-[#176B00] disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{contentSaving ? 'Guardando…' : 'Guardar'}</span>
+                  </button>
+                </div>
+              </div>
+              {contentMessage && (
+                <p className={`mt-4 text-xs font-semibold px-4 py-3 rounded-xl ${contentMessage.type === 'ok' ? 'bg-[#8CFF00]/15 text-[#082D05]' : 'bg-rose-50 text-rose-700'}`}>
+                  {contentMessage.text}
+                </p>
+              )}
             </div>
+
+            {isLoadingData && Object.keys(siteContent).length === 0 ? (
+              <div className="bg-white rounded-3xl border border-[#8CFF00]/25 p-8 text-sm text-neutral-500">Cargando contenidos…</div>
+            ) : Object.keys(siteContent).length === 0 ? (
+              <div className="bg-white rounded-3xl border border-rose-200 p-8 text-sm text-rose-700">No se pudieron cargar los contenidos. Comprueba que la API está en marcha.</div>
+            ) : (
+              <div className="grid grid-cols-1 xl:grid-cols-[1fr_380px] gap-6 items-start">
+                <div className="space-y-6">
+                  {CONTENT_SECTIONS.map(section => (
+                    <section key={section.title} className="bg-white rounded-3xl border border-[#8CFF00]/25 p-6 sm:p-8">
+                      <h3 className="font-display text-lg font-bold text-[#082D05]">{section.title}</h3>
+                      <p className="text-xs text-neutral-500 mt-1 mb-5">{section.description}</p>
+                      <div className="space-y-4">
+                        {section.fields.map(field => {
+                          const value = siteContent[field.key] ?? '';
+                          const defaultValue = contentDefaults[field.key] ?? '';
+                          const isCustom = value !== defaultValue;
+                          const isChanged = value !== (savedContent[field.key] ?? '');
+                          const inputClass = 'w-full px-4 py-3 border border-neutral-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8CFF00]';
+                          const onChange = (v: string) => setSiteContent(prev => ({ ...prev, [field.key]: v }));
+                          return (
+                            <div key={field.key}>
+                              <div className="flex items-center justify-between gap-2 mb-2">
+                                <label htmlFor={`content-${field.key}`} className="text-xs font-bold text-[#082D05] uppercase flex items-center gap-2">
+                                  {field.label}
+                                  {isChanged && <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 text-[10px] normal-case font-semibold">sin guardar</span>}
+                                  {!isChanged && isCustom && <span className="px-1.5 py-0.5 rounded bg-[#8CFF00]/20 text-[#082D05] text-[10px] normal-case font-semibold">personalizado</span>}
+                                </label>
+                                {isCustom && (
+                                  <button
+                                    type="button"
+                                    onClick={() => onChange(defaultValue)}
+                                    title={`Restaurar: ${defaultValue}`}
+                                    className="text-[11px] font-semibold text-[#176B00] hover:text-[#082D05] flex items-center gap-1"
+                                  >
+                                    <RotateCcw className="w-3 h-3" />
+                                    <span>Restaurar</span>
+                                  </button>
+                                )}
+                              </div>
+                              {field.multiline ? (
+                                <textarea
+                                  id={`content-${field.key}`}
+                                  rows={3}
+                                  maxLength={1000}
+                                  value={value}
+                                  placeholder={defaultValue}
+                                  onChange={(e) => onChange(e.target.value)}
+                                  className={`${inputClass} resize-y`}
+                                />
+                              ) : (
+                                <input
+                                  id={`content-${field.key}`}
+                                  type={field.key === 'instagram_url' ? 'url' : 'text'}
+                                  maxLength={1000}
+                                  value={value}
+                                  placeholder={defaultValue}
+                                  onChange={(e) => onChange(e.target.value)}
+                                  className={inputClass}
+                                />
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+
+                {/* Vista previa de la portada */}
+                <aside className="xl:sticky xl:top-6 space-y-3">
+                  <p className="text-xs font-bold uppercase tracking-widest text-[#082D05]/60 flex items-center gap-2"><Eye className="w-4 h-4" /> Vista previa portada</p>
+                  <div className="rounded-3xl overflow-hidden bg-[#082D05] text-white p-6 space-y-4 shadow-lg">
+                    <p className="text-[#B7FF00] text-[10px] font-bold uppercase tracking-[.22em]">{siteContent.hero_kicker || contentDefaults.hero_kicker}</p>
+                    <h4 className="font-display text-2xl font-bold leading-tight">
+                      {siteContent.hero_title || contentDefaults.hero_title}{' '}
+                      <span className="text-[#8CFF00]">{siteContent.hero_title_highlight || contentDefaults.hero_title_highlight}</span>
+                    </h4>
+                    <p className="text-xs text-white/80 leading-relaxed">{siteContent.hero_subtitle || contentDefaults.hero_subtitle}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <span className="px-3 py-2 bg-[#8CFF00] text-[#111111] font-bold text-[10px] uppercase tracking-widest rounded-lg">{siteContent.hero_cta_booking || contentDefaults.hero_cta_booking}</span>
+                      <span className="px-3 py-2 border border-[#B7FF00]/70 font-bold text-[10px] uppercase tracking-widest rounded-lg">{siteContent.hero_cta_instagram || contentDefaults.hero_cta_instagram}</span>
+                    </div>
+                  </div>
+                  <div className="rounded-3xl bg-white border border-[#8CFF00]/25 p-6 space-y-2">
+                    <p className="text-[#43B800] text-[10px] font-bold uppercase tracking-[.2em]">{siteContent.services_kicker || contentDefaults.services_kicker}</p>
+                    <h4 className="font-display text-lg font-bold text-[#082D05]">{siteContent.services_title || contentDefaults.services_title}</h4>
+                    <p className="text-xs text-[#687064]">{siteContent.services_intro || contentDefaults.services_intro}</p>
+                  </div>
+                  <div className="rounded-3xl bg-[#082D05] text-white p-6 text-center space-y-2">
+                    <h4 className="font-display text-lg font-bold">{siteContent.closing_title || contentDefaults.closing_title}</h4>
+                    <p className="text-xs text-white/75">{siteContent.closing_subtitle || contentDefaults.closing_subtitle}</p>
+                  </div>
+                </aside>
+              </div>
+            )}
           </div>
         )}
 

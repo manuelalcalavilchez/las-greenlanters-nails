@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import bodyParser from 'body-parser';
 import nodemailer from 'nodemailer';
+import crypto from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,6 +108,187 @@ const ensureColumn = async (table, column, definition) => {
     await dbRun(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 };
+
+// ==================== SEGURIDAD STAFF ====================
+// Autenticacion de la Cabina Staff validada en servidor. El PIN nunca viaja al bundle del frontend.
+app.set('trust proxy', process.env.TRUST_PROXY || 'loopback, linklocal, uniquelocal');
+
+const STAFF_PIN = process.env.STAFF_PIN || '';
+const STAFF_SESSION_SECRET = process.env.STAFF_SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const STAFF_SESSION_MS = (Number(process.env.STAFF_SESSION_HOURS) || 12) * 60 * 60 * 1000;
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
+if (!STAFF_PIN) console.warn('[staff] STAFF_PIN no configurado: el acceso Staff queda deshabilitado.');
+if (!process.env.STAFF_SESSION_SECRET) console.warn('[staff] STAFF_SESSION_SECRET no configurado: las sesiones se invalidan al reiniciar.');
+
+const revokedStaffTokens = new Map(); // jti -> exp
+const staffLoginAttempts = new Map(); // ip -> { count, firstAt, lockedUntil }
+
+const hmac = (value) => crypto.createHmac('sha256', STAFF_SESSION_SECRET).update(String(value)).digest('base64url');
+const safeEqual = (a, b) => {
+  const ba = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
+};
+
+const createStaffToken = () => {
+  const payload = Buffer.from(JSON.stringify({
+    jti: crypto.randomBytes(16).toString('hex'),
+    exp: Date.now() + STAFF_SESSION_MS
+  })).toString('base64url');
+  return `${payload}.${hmac(payload)}`;
+};
+
+const verifyStaffToken = (token) => {
+  if (!token || typeof token !== 'string' || !token.includes('.')) return null;
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature || !safeEqual(signature, hmac(payload))) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'));
+    if (!data?.jti || typeof data.exp !== 'number' || data.exp < Date.now()) return null;
+    if (revokedStaffTokens.has(data.jti)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+};
+
+const requireStaff = (req, res, next) => {
+  const header = req.header('authorization') || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  const session = verifyStaffToken(token);
+  if (!session) return res.status(401).json({ error: 'No autorizado' });
+  req.staffSession = session;
+  next();
+};
+
+// Limpieza periodica de intentos y tokens revocados caducados
+setInterval(() => {
+  const now = Date.now();
+  for (const [jti, exp] of revokedStaffTokens) if (exp < now) revokedStaffTokens.delete(jti);
+  for (const [ip, a] of staffLoginAttempts) {
+    if ((a.lockedUntil || 0) < now && now - a.firstAt > LOGIN_WINDOW_MS) staffLoginAttempts.delete(ip);
+  }
+}, 10 * 60 * 1000).unref();
+
+app.post('/api/staff/login', async (req, res) => {
+  if (!STAFF_PIN) return res.status(503).json({ error: 'Acceso Staff no configurado en el servidor' });
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  let attempt = staffLoginAttempts.get(ip);
+  if (!attempt || now - attempt.firstAt > LOGIN_WINDOW_MS) {
+    attempt = { count: 0, firstAt: now, lockedUntil: 0 };
+  }
+  if (attempt.lockedUntil > now) {
+    const retryAfter = Math.ceil((attempt.lockedUntil - now) / 1000);
+    res.set('Retry-After', String(retryAfter));
+    return res.status(429).json({ error: 'Demasiados intentos. Prueba más tarde.', retryAfter });
+  }
+
+  const pin = typeof req.body?.pin === 'string' ? req.body.pin : '';
+  if (pin && safeEqual(hmac(`pin:${pin}`), hmac(`pin:${STAFF_PIN}`))) {
+    staffLoginAttempts.delete(ip);
+    return res.json({ success: true, token: createStaffToken(), expiresIn: STAFF_SESSION_MS });
+  }
+
+  attempt.count += 1;
+  if (attempt.count >= LOGIN_MAX_ATTEMPTS) attempt.lockedUntil = now + LOGIN_WINDOW_MS;
+  staffLoginAttempts.set(ip, attempt);
+  await new Promise(r => setTimeout(r, 400));
+  return res.status(401).json({ error: 'PIN incorrecto', remaining: Math.max(0, LOGIN_MAX_ATTEMPTS - attempt.count) });
+});
+
+app.get('/api/staff/session', requireStaff, (req, res) => {
+  res.json({ authenticated: true, expiresAt: req.staffSession.exp });
+});
+
+app.post('/api/staff/logout', requireStaff, (req, res) => {
+  revokedStaffTokens.set(req.staffSession.jti, req.staffSession.exp);
+  res.json({ success: true });
+});
+
+// ==================== CONTENIDOS DE LA WEB ====================
+// Textos editables desde Staff > Contenidos. Los valores por defecto reproducen la portada actual.
+const SITE_CONTENT_DEFAULTS = {
+  hero_kicker: 'Las Greenlanters Nails · Almería',
+  hero_title: 'Tus manos hablan por ti.',
+  hero_title_highlight: 'Haz que destaquen.',
+  hero_subtitle: 'Manicurista · Técnica en uñas gel y poligel · Dibujos a mano · Decoración.',
+  hero_cta_booking: 'Solicitar cita',
+  hero_cta_instagram: 'Instagram',
+  services_kicker: 'Servicios',
+  services_title: 'Técnicas y decoración',
+  services_intro: 'La información se mantiene desde Staff y se refleja aquí automáticamente.',
+  services_empty: 'No hay servicios activos publicados.',
+  gallery_kicker: 'Galería',
+  gallery_title: 'Trabajos reales',
+  gallery_cta: 'Diseñar',
+  gallery_empty_title: 'La galería está pendiente de fotografías.',
+  gallery_empty_text: 'Añade las imágenes reales desde Staff y aparecerán aquí.',
+  closing_title: 'Nail art con personalidad.',
+  closing_subtitle: 'Almería · @greenlanters.nails',
+  closing_cta_booking: 'Solicitar cita',
+  instagram_handle: '@greenlanters.nails',
+  instagram_url: 'https://www.instagram.com/greenlanters.nails/'
+};
+const SITE_CONTENT_MAX_LENGTH = 1000;
+
+const loadSiteContent = async () => {
+  const rows = await dbAll('SELECT key, value, updatedAt FROM site_content');
+  const content = { ...SITE_CONTENT_DEFAULTS };
+  let updatedAt = null;
+  for (const row of rows) {
+    if (Object.prototype.hasOwnProperty.call(SITE_CONTENT_DEFAULTS, row.key) && typeof row.value === 'string') {
+      content[row.key] = row.value;
+      if (!updatedAt || row.updatedAt > updatedAt) updatedAt = row.updatedAt;
+    }
+  }
+  return { content, defaults: SITE_CONTENT_DEFAULTS, updatedAt };
+};
+
+app.get('/api/content', async (req, res) => {
+  try {
+    res.json(await loadSiteContent());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/content', requireStaff, async (req, res) => {
+  try {
+    const incoming = req.body?.content;
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return res.status(400).json({ error: 'Formato no válido' });
+    }
+    const updates = [];
+    for (const [key, raw] of Object.entries(incoming)) {
+      if (!Object.prototype.hasOwnProperty.call(SITE_CONTENT_DEFAULTS, key)) continue;
+      if (typeof raw !== 'string') return res.status(400).json({ error: `El campo ${key} debe ser texto` });
+      const value = raw.trim();
+      if (value.length > SITE_CONTENT_MAX_LENGTH) return res.status(400).json({ error: `El campo ${key} supera ${SITE_CONTENT_MAX_LENGTH} caracteres` });
+      if (key === 'instagram_url' && value && !/^https:\/\/[^\s]+$/i.test(value)) {
+        return res.status(400).json({ error: 'La URL de Instagram debe empezar por https://' });
+      }
+      updates.push([key, value]);
+    }
+    const now = new Date().toISOString();
+    for (const [key, value] of updates) {
+      // Vacio o igual al valor por defecto => se elimina y se usa el texto por defecto
+      if (!value || value === SITE_CONTENT_DEFAULTS[key]) {
+        await dbRun('DELETE FROM site_content WHERE key = ?', [key]);
+      } else {
+        await dbRun(
+          'INSERT INTO site_content (key, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt',
+          [key, value, now]
+        );
+      }
+    }
+    res.json({ success: true, ...(await loadSiteContent()) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Crear tablas al iniciar
 const initDatabase = async () => {
@@ -251,6 +433,15 @@ const initDatabase = async () => {
       )
     `);
 
+    // Tabla de contenidos editables de la web (Staff > Contenidos)
+    await dbRun(`
+      CREATE TABLE IF NOT EXISTS site_content (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updatedAt TEXT
+      )
+    `);
+
     // Semilla inicial: una sola cabina/especialista y catlogo real del proyecto.
     const serviceCount = await dbGet('SELECT COUNT(*) AS c FROM services');
     if (Number(serviceCount?.c || 0) === 0) {
@@ -317,7 +508,7 @@ const initDatabase = async () => {
 // ==================== RUTAS API ====================
 
 // CITAS
-app.get('/api/appointments', async (req, res) => {
+app.get('/api/appointments', requireStaff, async (req, res) => {
   try {
     const appointments = await dbAll('SELECT * FROM appointments ORDER BY date DESC, time DESC');
     res.json(appointments.map(a => ({
@@ -330,7 +521,7 @@ app.get('/api/appointments', async (req, res) => {
   }
 });
 
-app.post('/api/appointments', async (req, res) => {
+app.post('/api/appointments', requireStaff, async (req, res) => {
   try {
     const { id, locator, serviceIds, addonIds, specialistId, date, time, totalPrice, totalDuration, clientName, clientPhone, clientEmail, notes } = req.body;
     
@@ -354,7 +545,7 @@ app.post('/api/appointments', async (req, res) => {
   }
 });
 
-app.put('/api/appointments/:id', async (req, res) => {
+app.put('/api/appointments/:id', requireStaff, async (req, res) => {
   try {
     const { status, notes } = req.body;
     
@@ -381,7 +572,7 @@ app.put('/api/appointments/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/appointments/:id', async (req, res) => {
+app.delete('/api/appointments/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('DELETE FROM appointments WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -391,7 +582,7 @@ app.delete('/api/appointments/:id', async (req, res) => {
 });
 
 // DISEOS
-app.get('/api/designs', async (req, res) => {
+app.get('/api/designs', requireStaff, async (req, res) => {
   try {
     const designs = await dbAll('SELECT * FROM custom_designs ORDER BY createdAt DESC');
     res.json(designs);
@@ -417,7 +608,7 @@ app.post('/api/designs', async (req, res) => {
   }
 });
 
-app.put('/api/designs/:id', async (req, res) => {
+app.put('/api/designs/:id', requireStaff, async (req, res) => {
   try {
     const { status } = req.body;
     
@@ -432,7 +623,7 @@ app.put('/api/designs/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/designs/:id', async (req, res) => {
+app.delete('/api/designs/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('DELETE FROM custom_designs WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -451,7 +642,7 @@ app.get('/api/config', async (req, res) => {
   }
 });
 
-app.put('/api/config', async (req, res) => {
+app.put('/api/config', requireStaff, async (req, res) => {
   try {
     const {
       name, description, phone, email, address, hours, logo, coverPhoto,
@@ -513,7 +704,7 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-app.post('/api/services', async (req, res) => {
+app.post('/api/services', requireStaff, async (req, res) => {
   try {
     const { id, name, duration, price, description, shortDescription, longDescription, category, featured, sortOrder, instagramSource } = req.body;
     const now = new Date().toISOString();
@@ -528,7 +719,7 @@ app.post('/api/services', async (req, res) => {
   }
 });
 
-app.put('/api/services/:id', async (req, res) => {
+app.put('/api/services/:id', requireStaff, async (req, res) => {
   try {
     const { name, duration, price, description, shortDescription, longDescription, category, featured, sortOrder, instagramSource } = req.body;
     await dbRun(
@@ -542,7 +733,7 @@ app.put('/api/services/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/services/:id', async (req, res) => {
+app.delete('/api/services/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('UPDATE services SET active = 0 WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -561,7 +752,7 @@ app.get('/api/specialists', async (req, res) => {
   }
 });
 
-app.post('/api/specialists', async (req, res) => {
+app.post('/api/specialists', requireStaff, async (req, res) => {
   try {
     const { id, name, role, photo, description } = req.body;
     
@@ -576,7 +767,7 @@ app.post('/api/specialists', async (req, res) => {
   }
 });
 
-app.put('/api/specialists/:id', async (req, res) => {
+app.put('/api/specialists/:id', requireStaff, async (req, res) => {
   try {
     const { name, role, photo, description } = req.body;
     
@@ -591,7 +782,7 @@ app.put('/api/specialists/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/specialists/:id', async (req, res) => {
+app.delete('/api/specialists/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('UPDATE specialists SET active = 0 WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -652,7 +843,7 @@ app.get('/api/gallery', async (req, res) => {
   }
 });
 
-app.post('/api/gallery', async (req, res) => {
+app.post('/api/gallery', requireStaff, async (req, res) => {
   try {
     const { id, photoBase64, title, caption } = req.body;
     const order = await dbGet('SELECT MAX(displayOrder) as max FROM gallery');
@@ -669,7 +860,7 @@ app.post('/api/gallery', async (req, res) => {
   }
 });
 
-app.delete('/api/gallery/:id', async (req, res) => {
+app.delete('/api/gallery/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('DELETE FROM gallery WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -709,7 +900,7 @@ app.post('/api/booking-request', async (req, res) => {
   }
 });
 
-app.get('/api/booking-requests', async (req, res) => {
+app.get('/api/booking-requests', requireStaff, async (req, res) => {
   try {
     const requests = await dbAll('SELECT * FROM booking_requests ORDER BY createdAt DESC');
     res.json(requests);
@@ -718,7 +909,7 @@ app.get('/api/booking-requests', async (req, res) => {
   }
 });
 
-app.put('/api/booking-requests/:id', async (req, res) => {
+app.put('/api/booking-requests/:id', requireStaff, async (req, res) => {
   try {
     const { status } = req.body;
     
@@ -733,7 +924,7 @@ app.put('/api/booking-requests/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/booking-requests/:id', async (req, res) => {
+app.delete('/api/booking-requests/:id', requireStaff, async (req, res) => {
   try {
     await dbRun('DELETE FROM booking_requests WHERE id = ?', [req.params.id]);
     res.json({ success: true });
