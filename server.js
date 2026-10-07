@@ -550,8 +550,8 @@ app.get('/api/integrations/n8n/appointments/by-phone/:phone', n8nApiGuard, async
 const n8nSetStatus = async (req, res, targetStatus) => {
   try {
     const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
-    if (req.clientPhone && normalizePhone(current?.clientPhone) !== req.clientPhone) return res.status(403).json({ error: 'La cita no pertenece a este telefono' });
     if (!current) return res.status(404).json({ error: 'Cita no encontrada' });
+    if (req.clientPhone && normalizePhone(current.clientPhone) !== req.clientPhone) return res.status(403).json({ error: 'La cita no pertenece a este telefono' });
     if (targetStatus === 'Confirmada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede volver a Confirmada' });
     if (targetStatus === 'Cancelada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede cancelarse mediante esta accion' });
     if (targetStatus === 'Completada' && current.status === 'Cancelada') return res.status(409).json({ error: 'Una cita cancelada no puede completarse' });
@@ -564,9 +564,9 @@ const n8nSetStatus = async (req, res, targetStatus) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
-app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
-app.post('/api/integrations/n8n/appointments/:id/complete', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Completada'));
+app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, n8nClientPhoneGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
+app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, n8nClientPhoneGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
+app.post('/api/integrations/n8n/appointments/:id/complete', staffAuth, (req, res) => n8nSetStatus(req, res, 'Completada'));
 // DISEOS
 app.get('/api/designs', staffAuth, async (req, res) => {
   try {
