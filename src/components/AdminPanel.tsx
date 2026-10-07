@@ -100,6 +100,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [specialists, setSpecialists] = useState<any[]>([]);
   const [bookingRequests, setBookingRequests] = useState<any[]>([]);
   const [isLoadingData, setIsLoadingData] = useState(true);
+  const [confirmingRequest, setConfirmingRequest] = useState<any | null>(null);
+  const [confirmServices, setConfirmServices] = useState<string[]>([]);
+  const [confirmAddons, setConfirmAddons] = useState<string[]>([]);
+  const [confirmSpecialist, setConfirmSpecialist] = useState<string>("any");
 
   const reloadBookingRequests = async () => {
     const data = await apiService.getBookingRequests();
@@ -266,22 +270,41 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // SOLICITUDES DE CITA
   const generateLocator = () => `LGN-${Math.floor(1000 + Math.random() * 9000)}`;
 
-  const confirmBookingRequest = async (request: any) => {
+  const confirmBookingRequest = (request: any) => {
     if (!request.preferredDate || !request.preferredTime) {
       alert('Para confirmar una cita primero hay que tener fecha y hora solicitadas.');
       return;
     }
+    setConfirmServices([]);
+    setConfirmAddons([]);
+    setConfirmSpecialist('any');
+    setConfirmingRequest(request);
+  };
+
+  const doConfirmBookingRequest = async () => {
+    const request = confirmingRequest;
     const locator = generateLocator();
+
+    const totalPrice = [
+      ...confirmServices.map(id => services.find((s: any) => s.id === id)?.price || 0),
+      ...confirmAddons.map(id => services.find((s: any) => s.id === id)?.price || 0)
+    ].reduce((a: number, b: number) => a + b, 0);
+
+    const totalDuration = [
+      ...confirmServices.map(id => services.find((s: any) => s.id === id)?.durationMinutes || 0),
+      ...confirmAddons.map(id => services.find((s: any) => s.id === id)?.durationMinutes || 0)
+    ].reduce((a: number, b: number) => a + b, 0);
+
     const newAppointment: Appointment = {
       id: `appt_${Date.now()}`,
       locator,
-      serviceIds: [],
-      addonIds: [],
-      specialistId: 'any',
+      serviceIds: confirmServices,
+      addonIds: confirmAddons,
+      specialistId: confirmSpecialist,
       date: request.preferredDate,
       time: request.preferredTime,
-      totalPrice: 0,
-      totalDuration: 0,
+      totalPrice,
+      totalDuration,
       clientName: request.clientName,
       clientPhone: request.clientPhone,
       clientEmail: request.clientEmail,
@@ -295,7 +318,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setAppointments(prev => [newAppointment, ...prev]);
       await apiService.updateBookingRequest(request.id, 'Confirmada');
       await reloadBookingRequests();
-      alert(`Cita creada con localizador ${locator}. Recuerda ajustar servicios, especialista y precio en la pestaña Citas.`);
+      setConfirmingRequest(null);
     } else {
       alert('No se pudo crear la cita. Comprueba que la API está en marcha.');
     }
@@ -1201,6 +1224,90 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         )}
       </div>
+
+      {/* Modal confirmar solicitud con servicios */}
+      {confirmingRequest && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-neutral-100 flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-xl font-bold text-[#082D05]">Confirmar cita</h2>
+                <p className="text-xs text-neutral-500 mt-0.5">{confirmingRequest.clientName} · {confirmingRequest.preferredDate} {confirmingRequest.preferredTime}h</p>
+              </div>
+              <button onClick={() => setConfirmingRequest(null)} className="p-2 rounded-xl hover:bg-neutral-100">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              {/* Servicios */}
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">Servicios</p>
+                <div className="space-y-2">
+                  {services.map((svc: any) => {
+                    const checked = confirmServices.includes(svc.id);
+                    return (
+                      <label key={svc.id} className={`flex items-center justify-between p-3 rounded-xl border cursor-pointer transition-colors ${checked ? 'border-[#8CFF00] bg-[#8CFF00]/10' : 'border-neutral-200 hover:border-neutral-300'}`}>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => setConfirmServices(prev => checked ? prev.filter(id => id !== svc.id) : [...prev, svc.id])}
+                            className="accent-[#082D05]"
+                          />
+                          <span className="text-sm font-medium text-[#082D05]">{svc.name}</span>
+                        </div>
+                        <span className="text-sm font-bold text-[#082D05]">{svc.price}€</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Especialista */}
+              <div>
+                <p className="text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">Especialista</p>
+                <select
+                  value={confirmSpecialist}
+                  onChange={e => setConfirmSpecialist(e.target.value)}
+                  className="w-full px-3 py-2 border border-neutral-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#8CFF00]"
+                >
+                  <option value="any">Cualquiera disponible</option>
+                  {specialists.map((sp: any) => (
+                    <option key={sp.id} value={sp.id}>{sp.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Total */}
+              <div className="flex items-center justify-between p-4 bg-[#082D05] rounded-2xl">
+                <span className="text-sm font-semibold text-[#F7F8EF]">Total</span>
+                <span className="font-display text-2xl font-bold text-[#8CFF00]">
+                  {[
+                    ...confirmServices.map(id => services.find((s: any) => s.id === id)?.price || 0),
+                  ].reduce((a: number, b: number) => a + b, 0)}€
+                </span>
+              </div>
+            </div>
+
+            <div className="p-6 pt-0 flex gap-3">
+              <button
+                onClick={() => setConfirmingRequest(null)}
+                className="flex-1 px-4 py-3 bg-neutral-100 text-neutral-700 rounded-xl font-semibold text-sm hover:bg-neutral-200"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={doConfirmBookingRequest}
+                disabled={confirmServices.length === 0}
+                className="flex-1 px-4 py-3 bg-[#082D05] text-[#8CFF00] rounded-xl font-semibold text-sm hover:bg-[#176B00] disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Confirmar cita
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
