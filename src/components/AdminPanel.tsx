@@ -3,8 +3,6 @@ import { Calendar, Users, Palette, CheckCircle2, Clock, XCircle, Phone, Sparkles
 import { Appointment, CustomDesign, NailCatalogStyle } from '../types';
 import { apiService } from '../data/api';
 
-// This is only a client-side local gate, not real authentication. Use server-side auth before public deployment of Staff.
-const STAFF_PIN = import.meta.env.VITE_STAFF_PIN || '';
 
 interface SalonConfig {
   name: string;
@@ -105,7 +103,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   setCatalogStyles,
   onAddToCatalog
 }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => sessionStorage.getItem('greenlanters_staff_auth') === 'true');
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => apiService.hasStaffSession());
   const [pinInput, setPinInput] = useState<string>('');
   const [pinError, setPinError] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'config' | 'contenidos' | 'galeria' | 'servicios' | 'especialistas' | 'agenda' | 'designs' | 'requests' | 'facturacion'>('config');
@@ -191,8 +189,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   useEffect(() => {
-    reloadStaffData();
-  }, []);
+    if (isAuthenticated) reloadStaffData();
+  }, [isAuthenticated]);
 
   // Edit states
   const [editingService, setEditingService] = useState<any | null>(null);
@@ -201,12 +199,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [editingAppointment, setEditingAppointment] = useState<Appointment | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<any | null>(null);
 
-  const handlePinSubmit = (e: React.FormEvent) => {
+  const handlePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput === STAFF_PIN) {
+    const result = await apiService.loginStaff(pinInput);
+    if (result?.success) {
       sessionStorage.setItem('greenlanters_staff_auth', 'true');
       setIsAuthenticated(true);
       setPinError(false);
+      setPinInput('');
     } else {
       setPinError(true);
       setPinInput('');
@@ -214,7 +214,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem('greenlanters_staff_auth');
+    apiService.logoutStaff();
     setIsAuthenticated(false);
   };
 
@@ -1092,7 +1092,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </div>
                   <div className="grid md:grid-cols-3 gap-4"><div><label className="block text-xs font-bold mb-2 uppercase">IVA (%)</label><input disabled={selectedInvoice.status==='Emitida'} type="number" value={selectedInvoice.vatRate} onChange={e=>setSelectedInvoice({...selectedInvoice,vatRate:Number(e.target.value)})} className="w-full px-3 py-3 border rounded-xl"/></div><div><label className="block text-xs font-bold mb-2 uppercase">Forma de pago</label><select disabled={selectedInvoice.status==='Emitida'} value={selectedInvoice.paymentMethod||''} onChange={e=>setSelectedInvoice({...selectedInvoice,paymentMethod:e.target.value})} className="w-full px-3 py-3 border rounded-xl"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option><option>Bizum</option></select></div><div><label className="block text-xs font-bold mb-2 uppercase">Total</label><div className="px-3 py-3 bg-[#F7F8EF] rounded-xl font-bold text-[#082D05]">{Number(selectedInvoice.total||0).toFixed(2)} €</div></div></div>
                   <div><label className="block text-xs font-bold mb-2 uppercase">Notas</label><textarea disabled={selectedInvoice.status==='Emitida'} value={selectedInvoice.notes||''} onChange={e=>setSelectedInvoice({...selectedInvoice,notes:e.target.value})} className="w-full px-3 py-3 border rounded-xl min-h-20"/></div>
-                  <div className="flex flex-wrap justify-end gap-2">{selectedInvoice.status!=='Emitida'&&<><button onClick={saveInvoice} className="px-4 py-2 bg-neutral-200 rounded-xl text-xs font-bold">Guardar borrador</button><button onClick={issueSelectedInvoice} className="px-5 py-2 bg-[#082D05] text-[#F7F8EF] rounded-xl text-xs font-bold">Emitir factura</button></>}{selectedInvoice.status==='Emitida'&&<a href={'/api/invoices/'+selectedInvoice.id+'/print'} target="_blank" rel="noreferrer" className="px-5 py-2 bg-[#082D05] text-[#F7F8EF] rounded-xl text-xs font-bold">Imprimir / Guardar PDF</a>}</div>
+                  <div className="flex flex-wrap justify-end gap-2">{selectedInvoice.status!=='Emitida'&&<><button onClick={saveInvoice} className="px-4 py-2 bg-neutral-200 rounded-xl text-xs font-bold">Guardar borrador</button><button onClick={issueSelectedInvoice} className="px-5 py-2 bg-[#082D05] text-[#F7F8EF] rounded-xl text-xs font-bold">Emitir factura</button></>}{selectedInvoice.status==='Emitida'&&<button onClick={async()=>{const result=await apiService.printInvoice(selectedInvoice.id);if(!result?.success)alert(result?.error||'No se pudo abrir la factura.');}} className="px-5 py-2 bg-[#082D05] text-[#F7F8EF] rounded-xl text-xs font-bold">Imprimir / Guardar PDF</button>}</div>
                   {selectedInvoice.status==='Emitida'&&<div className="text-[10px] text-neutral-500 break-all border-t pt-4">Huella de auditoría: {selectedInvoice.recordHash || '—'}</div>}
                 </div>}
               </div>

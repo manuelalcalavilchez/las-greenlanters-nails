@@ -339,10 +339,84 @@ const initDatabase = async () => {
   }
 };
 
+
+// ==================== AUTENTICACION STAFF ====================
+// El panel Staff usa un token firmado por el servidor. Nunca se expone el PIN
+// ni el secreto en el bundle del navegador.
+const STAFF_TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+
+const base64UrlEncode = (value) => Buffer.from(value).toString('base64url');
+
+const createStaffToken = () => {
+  const secret = process.env.STAFF_TOKEN_SECRET;
+  if (!secret) throw new Error('STAFF_TOKEN_SECRET no configurado');
+  const payload = {
+    sub: 'staff',
+    iat: Date.now(),
+    exp: Date.now() + STAFF_TOKEN_TTL_MS
+  };
+  const encoded = base64UrlEncode(JSON.stringify(payload));
+  const signature = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+  return encoded + '.' + signature;
+};
+
+const verifyStaffToken = (token) => {
+  const secret = process.env.STAFF_TOKEN_SECRET;
+  if (!secret || !token) return false;
+  const parts = String(token).split('.');
+  if (parts.length !== 2) return false;
+  const [encoded, signature] = parts;
+  const expected = crypto.createHmac('sha256', secret).update(encoded).digest('base64url');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return false;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    return payload?.sub === 'staff' && Number(payload.exp) > Date.now();
+  } catch {
+    return false;
+  }
+};
+
+const staffAuth = (req, res, next) => {
+  if (!process.env.STAFF_TOKEN_SECRET) {
+    return res.status(503).json({ error: 'STAFF_TOKEN_SECRET no configurado en el servidor' });
+  }
+  const authorization = req.get('Authorization') || '';
+  const token = authorization.startsWith('Bearer ') ? authorization.slice(7) : '';
+  if (!verifyStaffToken(token)) {
+    return res.status(401).json({ error: 'Autenticacion Staff requerida' });
+  }
+  next();
+};
+
+const safeSecretCompare = (provided, expected) => {
+  const a = Buffer.from(String(provided || ''));
+  const b = Buffer.from(String(expected || ''));
+  return a.length === b.length && a.length > 0 && crypto.timingSafeEqual(a, b);
+};
+
+
+app.post('/api/staff/login', (req, res) => {
+  try {
+    const expectedPin = process.env.STAFF_PIN || process.env.STAFF_ACCESS_PIN;
+    if (!process.env.STAFF_TOKEN_SECRET || !expectedPin) {
+      return res.status(503).json({ error: 'Autenticacion Staff no configurada en el servidor' });
+    }
+    if (!safeSecretCompare(req.body?.pin, expectedPin)) {
+      return res.status(401).json({ error: 'PIN incorrecto' });
+    }
+    return res.json({ success: true, token: createStaffToken(), expiresIn: STAFF_TOKEN_TTL_MS });
+  } catch (err) {
+    console.error('Error en login Staff:', err);
+    return res.status(500).json({ error: 'No se pudo iniciar la sesion Staff' });
+  }
+});
+
 // ==================== RUTAS API ====================
 
 // CITAS
-app.get('/api/appointments', async (req, res) => {
+app.get('/api/appointments', staffAuth, async (req, res) => {
   try {
     const appointments = await dbAll('SELECT * FROM appointments ORDER BY date DESC, time DESC');
     res.json(appointments.map(a => ({
@@ -379,7 +453,7 @@ app.post('/api/appointments', async (req, res) => {
   }
 });
 
-app.put('/api/appointments/:id', async (req, res) => {
+app.put('/api/appointments/:id', staffAuth, async (req, res) => {
   try {
     const { status, notes, serviceIds, addonIds, specialistId, date, time, totalPrice, totalDuration } = req.body;
     const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
@@ -414,7 +488,7 @@ app.put('/api/appointments/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/appointments/:id', async (req, res) => {
+app.delete('/api/appointments/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('DELETE FROM appointments WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -434,29 +508,50 @@ const n8nApiGuard = (req, res, next) => {
 const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
 const serializeAppointment = (a) => ({ ...a, serviceIds: JSON.parse(a.serviceIds || '[]'), addonIds: JSON.parse(a.addonIds || '[]') });
 
+const n8nClientPhoneGuard = (req, res, next) => {
+  const phone = normalizePhone(req.get('X-Client-Phone'));
+  if (!phone) return res.status(400).json({ error: 'X-Client-Phone requerido' });
+  req.clientPhone = phone;
+  next();
+};
+
+
 app.get('/api/integrations/n8n/health', n8nApiGuard, (req, res) => {
   res.json({ success: true, service: 'las-greenlanters-n8n', version: 1, verifactu: 'not-active' });
 });
 
-app.get('/api/integrations/n8n/appointments/:id', n8nApiGuard, async (req, res) => {
-  try { const appointment = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+app.get('/api/integrations/n8n/appointments/:id', n8nApiGuard, n8nClientPhoneGuard, async (req, res) => {
+  try {
+    const appointment = await dbGet('SELECT * FROM appointments WHERE id = ? AND REPLACE(REPLACE(REPLACE(REPLACE(clientPhone, \' \', \'\'), \'+\', \'\'), \'-\', \'\'), \'(\', \'\') = ?', [req.params.id, req.clientPhone]);
+    if (!appointment) return res.status(404).json({ error: 'Cita no encontrada para este telefono' });
+    res.json({ success: true, appointment: serializeAppointment(appointment) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.get('/api/integrations/n8n/appointments/by-locator/:locator', n8nApiGuard, async (req, res) => {
-  try { const appointment = await dbGet('SELECT * FROM appointments WHERE locator = ?', [req.params.locator]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+app.get('/api/integrations/n8n/appointments/by-locator/:locator', n8nApiGuard, n8nClientPhoneGuard, async (req, res) => {
+  try {
+    const appointment = await dbGet('SELECT * FROM appointments WHERE locator = ? AND REPLACE(REPLACE(REPLACE(REPLACE(clientPhone, \' \', \'\'), \'+\', \'\'), \'-\', \'\'), \'(\', \'\') = ?', [req.params.locator, req.clientPhone]);
+    if (!appointment) return res.status(404).json({ error: 'Cita no encontrada para este telefono' });
+    res.json({ success: true, appointment: serializeAppointment(appointment) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/integrations/n8n/appointments/by-phone/:phone', n8nApiGuard, async (req, res) => {
-  try { const phone = normalizePhone(req.params.phone); const status = req.query.status ? String(req.query.status) : null; const rows = await dbAll('SELECT * FROM appointments ORDER BY date ASC, time ASC'); const matches = rows.filter(a => normalizePhone(a.clientPhone) === phone && (!status || a.status === status)); res.json({ success: true, count: matches.length, appointments: matches.map(serializeAppointment) }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  try {
+    const phone = normalizePhone(req.params.phone);
+    if (!phone) return res.status(400).json({ error: 'Telefono no valido' });
+    const status = req.query.status ? String(req.query.status) : null;
+    const rows = await dbAll('SELECT * FROM appointments ORDER BY date ASC, time ASC');
+    const matches = rows.filter(a => normalizePhone(a.clientPhone) === phone && (!status || a.status === status));
+    res.json({ success: true, count: matches.length, appointments: matches.map(serializeAppointment) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 const n8nSetStatus = async (req, res, targetStatus) => {
   try {
     const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
     if (!current) return res.status(404).json({ error: 'Cita no encontrada' });
+    if (req.clientPhone && normalizePhone(current.clientPhone) !== req.clientPhone) return res.status(403).json({ error: 'La cita no pertenece a este telefono' });
     if (targetStatus === 'Confirmada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede volver a Confirmada' });
     if (targetStatus === 'Cancelada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede cancelarse mediante esta accion' });
     if (targetStatus === 'Completada' && current.status === 'Cancelada') return res.status(409).json({ error: 'Una cita cancelada no puede completarse' });
@@ -469,11 +564,11 @@ const n8nSetStatus = async (req, res, targetStatus) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 };
 
-app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
-app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
-app.post('/api/integrations/n8n/appointments/:id/complete', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Completada'));
+app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, n8nClientPhoneGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
+app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, n8nClientPhoneGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
+app.post('/api/integrations/n8n/appointments/:id/complete', staffAuth, (req, res) => n8nSetStatus(req, res, 'Completada'));
 // DISEOS
-app.get('/api/designs', async (req, res) => {
+app.get('/api/designs', staffAuth, async (req, res) => {
   try {
     const designs = await dbAll('SELECT * FROM custom_designs ORDER BY createdAt DESC');
     res.json(designs);
@@ -482,7 +577,7 @@ app.get('/api/designs', async (req, res) => {
   }
 });
 
-app.post('/api/designs', async (req, res) => {
+app.post('/api/designs', staffAuth, async (req, res) => {
   try {
     const { id, code, clientName, clientPhone, clientEmail, shape, notes, imageBase64 } = req.body;
     
@@ -499,7 +594,7 @@ app.post('/api/designs', async (req, res) => {
   }
 });
 
-app.put('/api/designs/:id', async (req, res) => {
+app.put('/api/designs/:id', staffAuth, async (req, res) => {
   try {
     const { status } = req.body;
     
@@ -514,7 +609,7 @@ app.put('/api/designs/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/designs/:id', async (req, res) => {
+app.delete('/api/designs/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('DELETE FROM custom_designs WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -533,7 +628,7 @@ app.get('/api/config', async (req, res) => {
   }
 });
 
-app.put('/api/config', async (req, res) => {
+app.put('/api/config', staffAuth, async (req, res) => {
   try {
     const {
       name, description, phone, email, address, hours, logo, coverPhoto,
@@ -588,13 +683,13 @@ app.put('/api/config', async (req, res) => {
 });
 
 // FACTURACIÓN
-app.get('/api/invoices', async (req,res)=>{try{const rows=await dbAll('SELECT * FROM invoices ORDER BY createdAt DESC');res.json(rows.map(i=>({...i,lines:JSON.parse(i.lines||'[]')})));}catch(e){res.status(500).json({error:e.message});}});
-app.post('/api/invoices/draft-from-appointment/:appointmentId',async(req,res)=>{try{const a=await dbGet('SELECT * FROM appointments WHERE id=?',[req.params.appointmentId]);if(!a)return res.status(404).json({error:'Cita no encontrada'});if(a.status==='Cancelada')return res.status(400).json({error:'No se puede facturar una cita cancelada'});const ex=await dbGet('SELECT id FROM invoices WHERE appointmentId=? AND status!=?',[a.id,'Anulada']);if(ex)return res.status(409).json({error:'Esta cita ya tiene una factura o borrador',invoiceId:ex.id});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const ss=await dbAll('SELECT * FROM services WHERE active=1');const ids=JSON.parse(a.serviceIds||'[]');const lines=ids.map(id=>ss.find(s=>s.id===id)).filter(Boolean).map(s=>({description:s.name,quantity:1,unitPrice:Number(s.price)||0}));if(!lines.length)lines.push({description:'Servicio de manicura',quantity:1,unitPrice:Number(a.totalPrice)||0});const total=Number(a.totalPrice)||lines.reduce((x,l)=>x+l.unitPrice*l.quantity,0);const rate=Number(cfg?.defaultVat??21);const incl=Number(cfg?.pricesIncludeVat??1)===1;const subtotal=incl?total/(1+rate/100):total;const vat=incl?total-subtotal:total*rate/100;const now=new Date().toISOString();const inv={id:'inv_'+Date.now(),appointmentId:a.id,number:null,status:'Borrador',issueDate:now.slice(0,10),dueDate:now.slice(0,10),clientName:a.clientName||'',clientTaxId:'',clientEmail:a.clientEmail||'',clientPhone:a.clientPhone||'',clientAddress:'',lines,subtotal:+subtotal.toFixed(2),vatRate:rate,vatAmount:+vat.toFixed(2),total:+total.toFixed(2),paymentMethod:'Efectivo',notes:'',previousHash:null,recordHash:null,qrPayload:null,createdAt:now,updatedAt:now};await dbRun('INSERT INTO invoices (id,appointmentId,number,status,issueDate,dueDate,clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,subtotal,vatRate,vatAmount,total,paymentMethod,notes,previousHash,recordHash,qrPayload,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[inv.id,inv.appointmentId,null,inv.status,inv.issueDate,inv.dueDate,inv.clientName,inv.clientTaxId,inv.clientEmail,inv.clientPhone,inv.clientAddress,JSON.stringify(lines),inv.subtotal,inv.vatRate,inv.vatAmount,inv.total,inv.paymentMethod,inv.notes,null,null,null,now,now]);res.json({success:true,invoice:inv});}catch(e){res.status(500).json({error:e.message});}});
-app.put('/api/invoices/:id',async(req,res)=>{try{const cur=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!cur)return res.status(404).json({error:'Factura no encontrada'});if(cur.status==='Emitida')return res.status(409).json({error:'Una factura emitida no se edita; debe rectificarse'});const {clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,vatRate,paymentMethod,notes,issueDate,dueDate}=req.body;const safe=Array.isArray(lines)?lines:JSON.parse(cur.lines||'[]');const gross=safe.reduce((x,l)=>x+(Number(l.quantity)||0)*(Number(l.unitPrice)||0),0);const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const incl=Number(cfg?.pricesIncludeVat??1)===1;const rate=Number(vatRate??cur.vatRate??21);const subtotal=incl?gross/(1+rate/100):gross;const vat=incl?gross-subtotal:gross*rate/100;const total=incl?gross:gross+vat;await dbRun('UPDATE invoices SET clientName=?,clientTaxId=?,clientEmail=?,clientPhone=?,clientAddress=?,lines=?,subtotal=?,vatRate=?,vatAmount=?,total=?,paymentMethod=?,notes=?,issueDate=?,dueDate=?,updatedAt=? WHERE id=?',[clientName??cur.clientName,clientTaxId??cur.clientTaxId,clientEmail??cur.clientEmail,clientPhone??cur.clientPhone,clientAddress??cur.clientAddress,JSON.stringify(safe),+subtotal.toFixed(2),rate,+vat.toFixed(2),+total.toFixed(2),paymentMethod??cur.paymentMethod,notes??cur.notes,issueDate??cur.issueDate,dueDate??cur.dueDate,new Date().toISOString(),cur.id]);res.json({success:true});}catch(e){res.status(500).json({error:e.message});}});
-app.post('/api/invoices/:id/issue',async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});if(inv.status==='Emitida')return res.status(409).json({error:'La factura ya está emitida'});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);if(!cfg?.taxId)return res.status(400).json({error:'Configura primero el NIF/CIF del emisor en Configuración > Facturación'});const seq=Number(cfg.invoiceNextNumber||1);const number=(cfg.invoicePrefix||'F')+String(seq).padStart(4,'0');const prev=await dbGet("SELECT recordHash FROM invoices WHERE status='Emitida' ORDER BY createdAt DESC LIMIT 1");const previousHash=prev?.recordHash||'';const record={...inv,number,previousHash,lines:JSON.parse(inv.lines||'[]')};const recordHash=crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex');const qrPayload='FACTURA|'+number+'|'+cfg.taxId+'|'+Number(inv.total).toFixed(2)+'|'+inv.issueDate+'|'+recordHash;await dbRun("UPDATE invoices SET number=?,status='Emitida',previousHash=?,recordHash=?,qrPayload=?,updatedAt=? WHERE id=?",[number,previousHash,recordHash,qrPayload,new Date().toISOString(),inv.id]);await dbRun('UPDATE salón_config SET invoiceNextNumber=? WHERE id=?',[seq+1,'main']);res.json({success:true,number,recordHash,qrPayload});}catch(e){res.status(500).json({error:e.message});}});
-app.get('/api/invoices/:id/print',async(req,res)=>{try{const i=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!i)return res.status(404).send('Factura no encontrada');const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const lines=JSON.parse(i.lines||'[]').map(l=>'<tr><td>'+esc(l.description)+'</td><td>'+Number(l.quantity||0)+'</td><td>'+Number(l.unitPrice||0).toFixed(2)+' €</td><td>'+((Number(l.quantity)||0)*(Number(l.unitPrice)||0)).toFixed(2)+' €</td></tr>').join('');res.type('html').send('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+esc(i.number||'Borrador')+'</title><style>body{font-family:Arial,sans-serif;margin:40px;color:#222;max-width:900px;margin-left:auto;margin-right:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #082D05;padding-bottom:20px}h1{color:#082D05}table{width:100%;border-collapse:collapse;margin-top:30px}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left}.totals{margin-left:auto;width:320px;margin-top:25px}.r{display:flex;justify-content:space-between;padding:6px}.total{font-weight:bold;font-size:18px;border-top:2px solid #082D05;padding-top:10px}.print{margin-top:30px;padding:12px 18px;background:#082D05;color:white;border:0;border-radius:8px}@media print{.print{display:none}}</style></head><body><header><div><h1>'+esc(cfg?.legalName||cfg?.name||'Las Greenlanters Nails')+'</h1><div>'+esc(cfg?.taxId?'NIF/CIF: '+cfg.taxId:'')+'<br>'+esc(cfg?.address||'')+'<br>'+esc(cfg?.email||'')+'<br>'+esc(cfg?.phone||'')+'</div></div><div><h2>FACTURA '+esc(i.number||'BORRADOR')+'</h2><div>Fecha: '+esc(i.issueDate)+'</div></div></header><section style="margin-top:30px"><strong>Cliente</strong><p>'+esc(i.clientName)+'<br>'+esc(i.clientTaxId?'NIF/CIF: '+i.clientTaxId:'')+'<br>'+esc(i.clientAddress||'')+'<br>'+esc(i.clientEmail||'')+'<br>'+esc(i.clientPhone||'')+'</p></section><table><thead><tr><th>Concepto</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead><tbody>'+lines+'</tbody></table><div class="totals"><div class="r"><span>Base imponible</span><span>'+Number(i.subtotal||0).toFixed(2)+' €</span></div><div class="r"><span>IVA '+Number(i.vatRate||0)+'%</span><span>'+Number(i.vatAmount||0).toFixed(2)+' €</span></div><div class="r total"><span>TOTAL</span><span>'+Number(i.total||0).toFixed(2)+' €</span></div></div><p>Forma de pago: '+esc(i.paymentMethod||'')+'</p><p>'+esc(i.notes||'')+'</p><button class="print" onclick="window.print()">Imprimir / Guardar PDF</button></body></html>');}catch(e){res.status(500).send('Error generando factura');}});
+app.get('/api/invoices', staffAuth, async (req,res)=>{try{const rows=await dbAll('SELECT * FROM invoices ORDER BY createdAt DESC');res.json(rows.map(i=>({...i,lines:JSON.parse(i.lines||'[]')})));}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/draft-from-appointment/:appointmentId',staffAuth,async(req,res)=>{try{const a=await dbGet('SELECT * FROM appointments WHERE id=?',[req.params.appointmentId]);if(!a)return res.status(404).json({error:'Cita no encontrada'});if(a.status==='Cancelada')return res.status(400).json({error:'No se puede facturar una cita cancelada'});const ex=await dbGet('SELECT id FROM invoices WHERE appointmentId=? AND status!=?',[a.id,'Anulada']);if(ex)return res.status(409).json({error:'Esta cita ya tiene una factura o borrador',invoiceId:ex.id});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const ss=await dbAll('SELECT * FROM services WHERE active=1');const ids=JSON.parse(a.serviceIds||'[]');const lines=ids.map(id=>ss.find(s=>s.id===id)).filter(Boolean).map(s=>({description:s.name,quantity:1,unitPrice:Number(s.price)||0}));if(!lines.length)lines.push({description:'Servicio de manicura',quantity:1,unitPrice:Number(a.totalPrice)||0});const total=Number(a.totalPrice)||lines.reduce((x,l)=>x+l.unitPrice*l.quantity,0);const rate=Number(cfg?.defaultVat??21);const incl=Number(cfg?.pricesIncludeVat??1)===1;const subtotal=incl?total/(1+rate/100):total;const vat=incl?total-subtotal:total*rate/100;const now=new Date().toISOString();const inv={id:'inv_'+Date.now(),appointmentId:a.id,number:null,status:'Borrador',issueDate:now.slice(0,10),dueDate:now.slice(0,10),clientName:a.clientName||'',clientTaxId:'',clientEmail:a.clientEmail||'',clientPhone:a.clientPhone||'',clientAddress:'',lines,subtotal:+subtotal.toFixed(2),vatRate:rate,vatAmount:+vat.toFixed(2),total:+total.toFixed(2),paymentMethod:'Efectivo',notes:'',previousHash:null,recordHash:null,qrPayload:null,createdAt:now,updatedAt:now};await dbRun('INSERT INTO invoices (id,appointmentId,number,status,issueDate,dueDate,clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,subtotal,vatRate,vatAmount,total,paymentMethod,notes,previousHash,recordHash,qrPayload,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',[inv.id,inv.appointmentId,null,inv.status,inv.issueDate,inv.dueDate,inv.clientName,inv.clientTaxId,inv.clientEmail,inv.clientPhone,inv.clientAddress,JSON.stringify(lines),inv.subtotal,inv.vatRate,inv.vatAmount,inv.total,inv.paymentMethod,inv.notes,null,null,null,now,now]);res.json({success:true,invoice:inv});}catch(e){res.status(500).json({error:e.message});}});
+app.put('/api/invoices/:id',staffAuth,async(req,res)=>{try{const cur=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!cur)return res.status(404).json({error:'Factura no encontrada'});if(cur.status==='Emitida')return res.status(409).json({error:'Una factura emitida no se edita; debe rectificarse'});const {clientName,clientTaxId,clientEmail,clientPhone,clientAddress,lines,vatRate,paymentMethod,notes,issueDate,dueDate}=req.body;const safe=Array.isArray(lines)?lines:JSON.parse(cur.lines||'[]');const gross=safe.reduce((x,l)=>x+(Number(l.quantity)||0)*(Number(l.unitPrice)||0),0);const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const incl=Number(cfg?.pricesIncludeVat??1)===1;const rate=Number(vatRate??cur.vatRate??21);const subtotal=incl?gross/(1+rate/100):gross;const vat=incl?gross-subtotal:gross*rate/100;const total=incl?gross:gross+vat;await dbRun('UPDATE invoices SET clientName=?,clientTaxId=?,clientEmail=?,clientPhone=?,clientAddress=?,lines=?,subtotal=?,vatRate=?,vatAmount=?,total=?,paymentMethod=?,notes=?,issueDate=?,dueDate=?,updatedAt=? WHERE id=?',[clientName??cur.clientName,clientTaxId??cur.clientTaxId,clientEmail??cur.clientEmail,clientPhone??cur.clientPhone,clientAddress??cur.clientAddress,JSON.stringify(safe),+subtotal.toFixed(2),rate,+vat.toFixed(2),+total.toFixed(2),paymentMethod??cur.paymentMethod,notes??cur.notes,issueDate??cur.issueDate,dueDate??cur.dueDate,new Date().toISOString(),cur.id]);res.json({success:true});}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/:id/issue',staffAuth,async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});if(inv.status==='Emitida')return res.status(409).json({error:'La factura ya está emitida'});const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);if(!cfg?.taxId)return res.status(400).json({error:'Configura primero el NIF/CIF del emisor en Configuración > Facturación'});const seq=Number(cfg.invoiceNextNumber||1);const number=(cfg.invoicePrefix||'F')+String(seq).padStart(4,'0');const prev=await dbGet("SELECT recordHash FROM invoices WHERE status='Emitida' ORDER BY createdAt DESC LIMIT 1");const previousHash=prev?.recordHash||'';const record={...inv,number,previousHash,lines:JSON.parse(inv.lines||'[]')};const recordHash=crypto.createHash('sha256').update(JSON.stringify(record)).digest('hex');const qrPayload='FACTURA|'+number+'|'+cfg.taxId+'|'+Number(inv.total).toFixed(2)+'|'+inv.issueDate+'|'+recordHash;await dbRun("UPDATE invoices SET number=?,status='Emitida',previousHash=?,recordHash=?,qrPayload=?,updatedAt=? WHERE id=?",[number,previousHash,recordHash,qrPayload,new Date().toISOString(),inv.id]);await dbRun('UPDATE salón_config SET invoiceNextNumber=? WHERE id=?',[seq+1,'main']);res.json({success:true,number,recordHash,qrPayload});}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/invoices/:id/print',staffAuth,async(req,res)=>{try{const i=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!i)return res.status(404).send('Factura no encontrada');const cfg=await dbGet('SELECT * FROM salón_config WHERE id=?',['main']);const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const lines=JSON.parse(i.lines||'[]').map(l=>'<tr><td>'+esc(l.description)+'</td><td>'+Number(l.quantity||0)+'</td><td>'+Number(l.unitPrice||0).toFixed(2)+' €</td><td>'+((Number(l.quantity)||0)*(Number(l.unitPrice)||0)).toFixed(2)+' €</td></tr>').join('');res.type('html').send('<!doctype html><html lang="es"><head><meta charset="utf-8"><title>'+esc(i.number||'Borrador')+'</title><style>body{font-family:Arial,sans-serif;margin:40px;color:#222;max-width:900px;margin-left:auto;margin-right:auto}header{display:flex;justify-content:space-between;border-bottom:2px solid #082D05;padding-bottom:20px}h1{color:#082D05}table{width:100%;border-collapse:collapse;margin-top:30px}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left}.totals{margin-left:auto;width:320px;margin-top:25px}.r{display:flex;justify-content:space-between;padding:6px}.total{font-weight:bold;font-size:18px;border-top:2px solid #082D05;padding-top:10px}.print{margin-top:30px;padding:12px 18px;background:#082D05;color:white;border:0;border-radius:8px}@media print{.print{display:none}}</style></head><body><header><div><h1>'+esc(cfg?.legalName||cfg?.name||'Las Greenlanters Nails')+'</h1><div>'+esc(cfg?.taxId?'NIF/CIF: '+cfg.taxId:'')+'<br>'+esc(cfg?.address||'')+'<br>'+esc(cfg?.email||'')+'<br>'+esc(cfg?.phone||'')+'</div></div><div><h2>FACTURA '+esc(i.number||'BORRADOR')+'</h2><div>Fecha: '+esc(i.issueDate)+'</div></div></header><section style="margin-top:30px"><strong>Cliente</strong><p>'+esc(i.clientName)+'<br>'+esc(i.clientTaxId?'NIF/CIF: '+i.clientTaxId:'')+'<br>'+esc(i.clientAddress||'')+'<br>'+esc(i.clientEmail||'')+'<br>'+esc(i.clientPhone||'')+'</p></section><table><thead><tr><th>Concepto</th><th>Cant.</th><th>Precio</th><th>Total</th></tr></thead><tbody>'+lines+'</tbody></table><div class="totals"><div class="r"><span>Base imponible</span><span>'+Number(i.subtotal||0).toFixed(2)+' €</span></div><div class="r"><span>IVA '+Number(i.vatRate||0)+'%</span><span>'+Number(i.vatAmount||0).toFixed(2)+' €</span></div><div class="r total"><span>TOTAL</span><span>'+Number(i.total||0).toFixed(2)+' €</span></div></div><p>Forma de pago: '+esc(i.paymentMethod||'')+'</p><p>'+esc(i.notes||'')+'</p><button class="print" onclick="window.print()">Imprimir / Guardar PDF</button></body></html>');}catch(e){res.status(500).send('Error generando factura');}});
 
-app.post('/api/invoices/:id/cancel',async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});await dbRun("UPDATE invoices SET status='Anulada',updatedAt=? WHERE id=?",[new Date().toISOString(),inv.id]);res.json({success:true,warning:inv.status==='Emitida'?'La anulación queda registrada; para una rectificación fiscal completa debe emitirse la factura rectificativa correspondiente.':null});}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/invoices/:id/cancel',staffAuth,async(req,res)=>{try{const inv=await dbGet('SELECT * FROM invoices WHERE id=?',[req.params.id]);if(!inv)return res.status(404).json({error:'Factura no encontrada'});await dbRun("UPDATE invoices SET status='Anulada',updatedAt=? WHERE id=?",[new Date().toISOString(),inv.id]);res.json({success:true,warning:inv.status==='Emitida'?'La anulación queda registrada; para una rectificación fiscal completa debe emitirse la factura rectificativa correspondiente.':null});}catch(e){res.status(500).json({error:e.message});}});
 // SERVICIOS
 app.get('/api/services', async (req, res) => {
   try {
@@ -605,7 +700,7 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-app.post('/api/services', async (req, res) => {
+app.post('/api/services', staffAuth, async (req, res) => {
   try {
     const { id, name, duration, price, description, shortDescription, longDescription, category, featured, sortOrder, instagramSource } = req.body;
     const now = new Date().toISOString();
@@ -620,7 +715,7 @@ app.post('/api/services', async (req, res) => {
   }
 });
 
-app.put('/api/services/:id', async (req, res) => {
+app.put('/api/services/:id', staffAuth, async (req, res) => {
   try {
     const { name, duration, price, description, shortDescription, longDescription, category, featured, sortOrder, instagramSource } = req.body;
     await dbRun(
@@ -634,7 +729,7 @@ app.put('/api/services/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/services/:id', async (req, res) => {
+app.delete('/api/services/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('UPDATE services SET active = 0 WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -653,7 +748,7 @@ app.get('/api/specialists', async (req, res) => {
   }
 });
 
-app.post('/api/specialists', async (req, res) => {
+app.post('/api/specialists', staffAuth, async (req, res) => {
   try {
     const { id, name, role, photo, description } = req.body;
     
@@ -668,7 +763,7 @@ app.post('/api/specialists', async (req, res) => {
   }
 });
 
-app.put('/api/specialists/:id', async (req, res) => {
+app.put('/api/specialists/:id', staffAuth, async (req, res) => {
   try {
     const { name, role, photo, description } = req.body;
     
@@ -683,7 +778,7 @@ app.put('/api/specialists/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/specialists/:id', async (req, res) => {
+app.delete('/api/specialists/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('UPDATE specialists SET active = 0 WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -744,7 +839,7 @@ app.get('/api/gallery', async (req, res) => {
   }
 });
 
-app.post('/api/gallery', async (req, res) => {
+app.post('/api/gallery', staffAuth, async (req, res) => {
   try {
     const { id, photoBase64, title, caption } = req.body;
     const order = await dbGet('SELECT MAX(displayOrder) as max FROM gallery');
@@ -761,7 +856,7 @@ app.post('/api/gallery', async (req, res) => {
   }
 });
 
-app.delete('/api/gallery/:id', async (req, res) => {
+app.delete('/api/gallery/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('DELETE FROM gallery WHERE id = ?', [req.params.id]);
     res.json({ success: true });
@@ -801,7 +896,7 @@ app.post('/api/booking-request', async (req, res) => {
   }
 });
 
-app.get('/api/booking-requests', async (req, res) => {
+app.get('/api/booking-requests', staffAuth, async (req, res) => {
   try {
     const requests = await dbAll('SELECT * FROM booking_requests ORDER BY createdAt DESC');
     res.json(requests);
@@ -810,7 +905,7 @@ app.get('/api/booking-requests', async (req, res) => {
   }
 });
 
-app.put('/api/booking-requests/:id', async (req, res) => {
+app.put('/api/booking-requests/:id', staffAuth, async (req, res) => {
   try {
     const { status } = req.body;
     
@@ -825,7 +920,7 @@ app.put('/api/booking-requests/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/booking-requests/:id', async (req, res) => {
+app.delete('/api/booking-requests/:id', staffAuth, async (req, res) => {
   try {
     await dbRun('DELETE FROM booking_requests WHERE id = ?', [req.params.id]);
     res.json({ success: true });
