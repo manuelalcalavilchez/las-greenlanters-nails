@@ -131,8 +131,14 @@ const initDatabase = async () => {
         notes TEXT,
         createdAt TEXT,
         updatedAt TEXT
-      )
+,
+        lastActionSource TEXT,
+        lastActionAt TEXT      )
     `);
+
+    // Campos de trazabilidad para integraciones (n8n/WhatsApp)
+    await ensureColumn('appointments', 'lastActionSource', 'TEXT');
+    await ensureColumn('appointments', 'lastActionAt', 'TEXT');
 
     // Tabla de diseños personalizados
     await dbRun(`
@@ -417,6 +423,50 @@ app.delete('/api/appointments/:id', async (req, res) => {
   }
 });
 
+// ==================== INTEGRACION N8N / WHATSAPP ====================
+// Rutas limitadas para que n8n consulte y ejecute acciones de negocio.
+const n8nApiGuard = (req, res, next) => {
+  const expected = process.env.N8N_API_KEY;
+  if (expected && req.get('X-API-Key') !== expected) return res.status(401).json({ error: 'API key de n8n no valida' });
+  next();
+};
+const normalizePhone = (value) => String(value || '').replace(/\D/g, '');
+const serializeAppointment = (a) => ({ ...a, serviceIds: JSON.parse(a.serviceIds || '[]'), addonIds: JSON.parse(a.addonIds || '[]') });
+
+app.get('/api/integrations/n8n/appointments/:id', n8nApiGuard, async (req, res) => {
+  try { const appointment = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/integrations/n8n/appointments/by-locator/:locator', n8nApiGuard, async (req, res) => {
+  try { const appointment = await dbGet('SELECT * FROM appointments WHERE locator = ?', [req.params.locator]); if (!appointment) return res.status(404).json({ error: 'Cita no encontrada' }); res.json({ success: true, appointment: serializeAppointment(appointment) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/integrations/n8n/appointments/by-phone/:phone', n8nApiGuard, async (req, res) => {
+  try { const phone = normalizePhone(req.params.phone); const status = req.query.status ? String(req.query.status) : null; const rows = await dbAll('SELECT * FROM appointments ORDER BY date ASC, time ASC'); const matches = rows.filter(a => normalizePhone(a.clientPhone) === phone && (!status || a.status === status)); res.json({ success: true, count: matches.length, appointments: matches.map(serializeAppointment) }); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const n8nSetStatus = async (req, res, targetStatus) => {
+  try {
+    const current = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
+    if (!current) return res.status(404).json({ error: 'Cita no encontrada' });
+    if (targetStatus === 'Confirmada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede volver a Confirmada' });
+    if (targetStatus === 'Cancelada' && current.status === 'Completada') return res.status(409).json({ error: 'Una cita completada no puede cancelarse mediante esta accion' });
+    if (targetStatus === 'Completada' && current.status === 'Cancelada') return res.status(409).json({ error: 'Una cita cancelada no puede completarse' });
+    if (current.status === targetStatus) return res.json({ success: true, action: targetStatus, alreadySet: true, appointment: serializeAppointment(current) });
+    const now = new Date().toISOString();
+    await dbRun('UPDATE appointments SET status = ?, lastActionSource = ?, lastActionAt = ?, updatedAt = ? WHERE id = ?', [targetStatus, 'n8n', now, now, req.params.id]);
+    const updated = await dbGet('SELECT * FROM appointments WHERE id = ?', [req.params.id]);
+    if (targetStatus === 'Cancelada' && updated?.clientEmail) sendEmail({ to: updated.clientEmail, subject: 'Tu cita ' + updated.locator + ' ha sido cancelada - Las Greenlanters Nails', templateName: 'booking-cancelled.html', vars: { clientName: updated.clientName, locator: updated.locator, date: updated.date, time: updated.time } });
+    res.json({ success: true, action: targetStatus, appointment: serializeAppointment(updated) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+};
+
+app.post('/api/integrations/n8n/appointments/:id/confirm', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Confirmada'));
+app.post('/api/integrations/n8n/appointments/:id/cancel', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Cancelada'));
+app.post('/api/integrations/n8n/appointments/:id/complete', n8nApiGuard, (req, res) => n8nSetStatus(req, res, 'Completada'));
 // DISEOS
 app.get('/api/designs', async (req, res) => {
   try {
